@@ -3,18 +3,11 @@ service:
   version: 0.1.0
 
 environments:
-  dev1:
+  development:
     engine: mysql
     host: 127.0.0.1
     port: 3306
     user: root
-    password: changeme
-
-  analytics:
-    engine: postgres
-    host: 127.0.0.1
-    port: 5432
-    user: postgres
     password: changeme
 
 openai:
