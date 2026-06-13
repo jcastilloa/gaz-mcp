@@ -65,6 +65,15 @@ func (r *ViperRepository) MySQLConfig() configDomain.MySQLConfig {
 	}
 }
 
+func (r *ViperRepository) PostgresConfig() configDomain.PostgresConfig {
+	return configDomain.PostgresConfig{
+		Host:     r.v.GetString("postgres.host"),
+		Port:     r.v.GetInt("postgres.port"),
+		User:     r.v.GetString("postgres.user"),
+		Password: r.v.GetString("postgres.password"),
+	}
+}
+
 func (r *ViperRepository) ServiceConfig() configDomain.ServiceConfig {
 	version := r.v.GetString("service.version")
 	if version == "" {

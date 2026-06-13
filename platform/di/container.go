@@ -22,14 +22,16 @@ type Container struct {
 	serviceName  string
 	serviceCfg   configDomain.ServiceConfig
 	mysqlCfg     configDomain.MySQLConfig
+	postgresCfg  configDomain.PostgresConfig
 }
 
-func New(aiRepository aiDomain.AIRepository, serviceName string, serviceCfg configDomain.ServiceConfig, mysqlCfg configDomain.MySQLConfig) *Container {
+func New(aiRepository aiDomain.AIRepository, serviceName string, serviceCfg configDomain.ServiceConfig, mysqlCfg configDomain.MySQLConfig, postgresCfg configDomain.PostgresConfig) *Container {
 	return &Container{
 		aiRepository: aiRepository,
 		serviceName:  serviceName,
 		serviceCfg:   serviceCfg,
 		mysqlCfg:     mysqlCfg,
+		postgresCfg:  postgresCfg,
 	}
 }
 
@@ -48,26 +50,42 @@ func (c *Container) Build() (*di.Container, error) {
 			},
 		},
 		di.Def{
-			Name:  "mcp.sql.repository",
+			Name:  "mcp.sql.mysql.repository",
 			Scope: di.App,
 			Build: func(ctn di.Container) (interface{}, error) {
 				return sqlInfra.NewMySQLRepository(c.mysqlCfg)
 			},
 		},
 		di.Def{
-			Name:  "mcp.sql.service",
+			Name:  "mcp.sql.postgres.repository",
 			Scope: di.App,
 			Build: func(ctn di.Container) (interface{}, error) {
-				sqlRepository := ctn.Get("mcp.sql.repository").(sqlDomain.Repository)
-				return sqlApp.NewService(sqlRepository), nil
+				return sqlInfra.NewPostgresRepository(c.postgresCfg)
+			},
+		},
+		di.Def{
+			Name:  "mcp.sql.mysql.service",
+			Scope: di.App,
+			Build: func(ctn di.Container) (interface{}, error) {
+				repo := ctn.Get("mcp.sql.mysql.repository").(sqlDomain.Repository)
+				return sqlApp.NewService(repo), nil
+			},
+		},
+		di.Def{
+			Name:  "mcp.sql.postgres.service",
+			Scope: di.App,
+			Build: func(ctn di.Container) (interface{}, error) {
+				repo := ctn.Get("mcp.sql.postgres.repository").(sqlDomain.Repository)
+				return sqlApp.NewService(repo), nil
 			},
 		},
 		di.Def{
 			Name:  "mcp.sql.tool",
 			Scope: di.App,
 			Build: func(ctn di.Container) (interface{}, error) {
-				sqlService := ctn.Get("mcp.sql.service").(sqlApp.Service)
-				return tools.NewSQLQuery(sqlService), nil
+				mysqlSvc := ctn.Get("mcp.sql.mysql.service").(sqlApp.Service)
+				postgresSvc := ctn.Get("mcp.sql.postgres.service").(sqlApp.Service)
+				return tools.NewSQLQuery(mysqlSvc, postgresSvc), nil
 			},
 		},
 		di.Def{

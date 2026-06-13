@@ -1,17 +1,18 @@
 # gaz-mcp
 
-Read-only MySQL proxy exposed as an MCP server. Lets AI coding agents explore schemas and run `SELECT` queries safely — no writes, no accidental data loss.
+Read-only MySQL and PostgreSQL proxy exposed as an MCP server. Lets AI coding agents explore schemas and run `SELECT` queries safely — no writes, no accidental data loss.
 
 ## Overview
 
-`gaz-mcp` wraps a MySQL connection in an MCP-compatible stdio server. AI agents (Claude, Codex, Cursor, OpenCode, etc.) call the `sql_query` tool to inspect tables, describe columns, and query data.
+`gaz-mcp` wraps MySQL and PostgreSQL connections in an MCP-compatible stdio server. AI agents call the `sql_query` tool to inspect tables, describe columns, and query data across both engines.
 
-Every query runs inside a **read-only MySQL transaction** and is validated at the application layer. Write statements (`INSERT`, `UPDATE`, `DELETE`, `DROP`, etc.) are rejected before they reach the database.
+Every query runs inside a **read-only database transaction** and is validated at the application layer. Write statements (`INSERT`, `UPDATE`, `DELETE`, `DROP`, etc.) are rejected before they reach the database.
 
 ## Features
 
 - **MCP stdio server** — one binary, no daemon, no network ports.
-- **Read-only enforcement** — app-level keyword block + `SET SESSION TRANSACTION READ ONLY`.
+- **MySQL + PostgreSQL** — dual-engine support, selectable per query via `type` parameter.
+- **Read-only enforcement** — app-level keyword block + engine-level read-only transaction.
 - **Dynamic database selection** — the agent picks the target database per query, not from config.
 - **JSON output** — `{columns, rows}` response, easy to parse.
 - **YAML config** via Viper with environment variable overrides.
@@ -88,9 +89,15 @@ mysql:
   port: 3306
   user: readonly_user
   password: your-password
+
+postgres:
+  host: 127.0.0.1
+  port: 5432
+  user: postgres
+  password: your-password
 ```
 
-All keys support environment variable overrides (`MYSQL_HOST`, `MYSQL_PORT`, etc.).
+All keys support environment variable overrides (`MYSQL_HOST`, `POSTGRES_HOST`, etc.).
 
 The `database` is **not** configured statically — the AI agent passes it as a tool parameter per query.
 
@@ -155,16 +162,17 @@ Follow the prompts: project or global → name `gaz-mcp` → type `local` → co
 
 ### `sql_query`
 
-Execute a read-only SQL query against a MySQL database.
+Execute a read-only SQL query against MySQL or PostgreSQL.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `database` | string | yes | MySQL database name to query |
+| `type` | string | no | Database engine: `mysql` or `postgres` (default: `mysql`) |
+| `database` | string | yes | Database name to query |
 | `query` | string | yes | SQL query — `SELECT`, `SHOW`, `DESCRIBE`, `EXPLAIN` |
 
 **Returns:** JSON object with `columns` (string array) and `rows` (array of string arrays).
 
-**Allowed statements:** `SELECT`, `SHOW`, `DESCRIBE`, `EXPLAIN`.
+**Allowed statements:** `SELECT`, `SHOW` (MySQL), `DESCRIBE` (MySQL), `EXPLAIN`.
 
 **Blocked statements:** `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, and anything that mutates data.
 
@@ -173,7 +181,8 @@ Execute a read-only SQL query against a MySQL database.
 ```
 sql_query(database="myapp", query="SHOW TABLES")
 sql_query(database="myapp", query="DESCRIBE users")
-sql_query(database="myapp", query="SELECT id, email FROM users WHERE active=1 LIMIT 20")
+sql_query(type="postgres", database="analytics", query="SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname='public' LIMIT 20")
+sql_query(type="postgres", database="analytics", query="SELECT * FROM users LIMIT 10")
 ```
 
 ## Architecture
@@ -190,7 +199,7 @@ gaz-mcp/
 │   └── mcp/
 │       ├── commands/        # Cobra CLI runner
 │       ├── server/          # MCP server wrapper
-│       ├── sql/             # MySQL adapter
+│       ├── sql/             # MySQL + PostgreSQL adapters
 │       └── tools/           # MCP tool definitions
 └── shared/
     ├── ai/domain/           # AI provider contracts

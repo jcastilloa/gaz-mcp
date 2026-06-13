@@ -17,9 +17,10 @@ func main() {
 
 	serviceCfg := cfgRepo.ServiceConfig()
 	mysqlCfg := cfgRepo.MySQLConfig()
+	postgresCfg := cfgRepo.PostgresConfig()
 	openaiRepo := openai.NewOpenAIRepository(cfgRepo.OpenAIProviderConfig(), nil)
 
-	containerBuilder := containerdi.New(openaiRepo, "gaz-mcp", serviceCfg, mysqlCfg)
+	containerBuilder := containerdi.New(openaiRepo, "gaz-mcp", serviceCfg, mysqlCfg, postgresCfg)
 	container, err := containerBuilder.Build()
 	if err != nil {
 		log.Fatal(err)

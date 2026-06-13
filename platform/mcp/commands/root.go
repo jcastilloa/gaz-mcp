@@ -36,7 +36,7 @@ func (r Runner) Execute() error {
 func (r Runner) newRootCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   r.serviceName,
-		Short: "MCP SQL proxy for MySQL dev environments",
+		Short: "MCP SQL proxy for MySQL and PostgreSQL dev databases",
 		RunE:  r.runServer(),
 	}
 

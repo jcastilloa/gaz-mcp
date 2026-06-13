@@ -1,6 +1,6 @@
 # AGENTS.md — gaz-mcp MCP
 
-Read-only MySQL MCP proxy for Grupo ADSLZone development databases. Hexagonal architecture, `cobra` + `viper`, DI.
+Read-only MySQL + PostgreSQL MCP proxy. Hexagonal architecture, `cobra` + `viper`, DI.
 
 ## Mandatory Skills
 
@@ -44,9 +44,9 @@ gaz-mcp/
 
 ## MCP Tools
 
-| Tool        | Parameters              | Description                                      |
-|-------------|-------------------------|--------------------------------------------------|
-| `sql_query` | `database`, `query`     | Read-only SQL against any MySQL database         |
+| Tool        | Parameters                        | Description                                               |
+|-------------|-----------------------------------|-----------------------------------------------------------|
+| `sql_query` | `type`, `database`, `query`       | Read-only SQL against MySQL or PostgreSQL                 |
 
 ## MCP Convention
 

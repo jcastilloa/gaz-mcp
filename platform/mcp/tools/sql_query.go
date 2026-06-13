@@ -12,28 +12,37 @@ import (
 )
 
 type SQLQuery struct {
-	service sqlApp.Service
+	mysqlService    sqlApp.Service
+	postgresService sqlApp.Service
 }
 
-func NewSQLQuery(service sqlApp.Service) SQLQuery {
-	return SQLQuery{service: service}
+func NewSQLQuery(mysqlService, postgresService sqlApp.Service) SQLQuery {
+	return SQLQuery{mysqlService: mysqlService, postgresService: postgresService}
 }
 
 func (s SQLQuery) Definition() mcp.Tool {
 	return mcp.NewTool("sql_query",
-		mcp.WithDescription("Execute a read-only SQL query (SELECT, SHOW, DESCRIBE, EXPLAIN) against a MySQL database. Returns JSON with columns and rows."),
+		mcp.WithDescription("Execute a read-only SQL query against MySQL or PostgreSQL. Returns JSON with columns and rows."),
+		mcp.WithString("type",
+			mcp.Description("Database type: mysql or postgres (default: mysql)"),
+		),
 		mcp.WithString("database",
 			mcp.Required(),
-			mcp.Description("MySQL database name to query"),
+			mcp.Description("Database name to query"),
 		),
 		mcp.WithString("query",
 			mcp.Required(),
-			mcp.Description("SQL query to execute (SELECT, SHOW, DESCRIBE, EXPLAIN only)"),
+			mcp.Description("SQL query to execute (SELECT, SHOW, DESCRIBE, EXPLAIN)"),
 		),
 	)
 }
 
 func (s SQLQuery) Handler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	dbType := strings.ToLower(strings.TrimSpace(mcp.ParseString(request, "type", "mysql")))
+	if dbType != "mysql" && dbType != "postgres" {
+		return mcp.NewToolResultError("type must be 'mysql' or 'postgres'"), nil
+	}
+
 	database := strings.TrimSpace(mcp.ParseString(request, "database", ""))
 	if database == "" {
 		return mcp.NewToolResultError("database parameter is required"), nil
@@ -44,7 +53,12 @@ func (s SQLQuery) Handler(ctx context.Context, request mcp.CallToolRequest) (*mc
 		return mcp.NewToolResultError("query parameter is required"), nil
 	}
 
-	result, err := s.service.ExecuteQuery(ctx, database, query)
+	svc := s.mysqlService
+	if dbType == "postgres" {
+		svc = s.postgresService
+	}
+
+	result, err := svc.ExecuteQuery(ctx, database, query)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("query error: %v", err)), nil
 	}

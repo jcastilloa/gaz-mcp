@@ -8,6 +8,12 @@ mysql:
   user: root
   password: changeme
 
+postgres:
+  host: 127.0.0.1
+  port: 5432
+  user: postgres
+  password: changeme
+
 openai:
   provider_name: openai
   api_key: sk-xxxx
