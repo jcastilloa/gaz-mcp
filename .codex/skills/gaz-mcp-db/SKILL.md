@@ -12,13 +12,13 @@ You have access to the `gaz-mcp` SQL proxy — a read-only MCP bridge to MySQL a
 
 ### `sql_query`
 
-Executes a read-only query. The tool description lists all available environments.
+Executes a read-only query. The tool description lists all available environments configured on the server.
 
 **Parameters:**
 
 | Parameter     | Required | Description |
 |---------------|----------|-------------|
-| `environment` | yes      | Environment name as shown in the tool description |
+| `environment` | yes      | Environment name — check the tool description for available values |
 | `database`    | yes      | Database name to query |
 | `query`       | yes      | SQL query — `SELECT`, `SHOW`, `DESCRIBE`, or `EXPLAIN` |
 
@@ -26,20 +26,24 @@ Executes a read-only query. The tool description lists all available environment
 
 ## Usage patterns
 
+Always check the `sql_query` tool description first to see which environments are available. Then use the exact environment name from that list.
+
 MySQL — explore what tables exist:
 
 ```
-sql_query(environment="dev1", database="myapp", query="SHOW TABLES")
-sql_query(environment="dev1", database="myapp", query="DESCRIBE users")
-sql_query(environment="dev1", database="myapp", query="SELECT id, email FROM users LIMIT 20")
+sql_query(environment="<name-from-tool-description>", database="myapp", query="SHOW TABLES")
+sql_query(environment="<name-from-tool-description>", database="myapp", query="DESCRIBE users")
+sql_query(environment="<name-from-tool-description>", database="myapp", query="SELECT id, email FROM users LIMIT 20")
 ```
 
 PostgreSQL — explore schema via system catalogs:
 
 ```
-sql_query(environment="analytics", database="analytics", query="SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname='public' LIMIT 20")
-sql_query(environment="analytics", database="analytics", query="SELECT column_name, data_type FROM information_schema.columns WHERE table_name='users'")
+sql_query(environment="<name-from-tool-description>", database="analytics", query="SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname='public' LIMIT 20")
+sql_query(environment="<name-from-tool-description>", database="analytics", query="SELECT column_name, data_type FROM information_schema.columns WHERE table_name='users'")
 ```
+
+The engine (MySQL or PostgreSQL) is determined by the environment configuration — you don't need to specify it.
 
 ## Read-only enforcement
 
