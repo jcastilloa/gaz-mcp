@@ -36,10 +36,10 @@ go build -o gaz-mcp ./cmd/server/
 
 ```bash
 # Latest release
-curl -fsSL https://raw.githubusercontent.com/jcastilloa/gaz-mcp/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/jcastilloa/gaz-mcp/master/scripts/install.sh | sh
 
 # Specific version
-curl -fsSL https://raw.githubusercontent.com/jcastilloa/gaz-mcp/main/scripts/install.sh | VERSION=vX.Y.Z sh
+curl -fsSL https://raw.githubusercontent.com/jcastilloa/gaz-mcp/master/scripts/install.sh | VERSION=vX.Y.Z sh
 ```
 
 **Installer environment variables:**
