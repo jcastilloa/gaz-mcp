@@ -16,14 +16,16 @@ const RootCommandLabel = "mcp.root.command"
 type Runner struct {
 	serviceName string
 	serviceCfg  configDomain.ServiceConfig
+	version     string
 	server      *mcpserver.Server
 	sqlTool     tools.SQLQuery
 }
 
-func NewRunner(serviceName string, serviceCfg configDomain.ServiceConfig, server *mcpserver.Server, sqlTool tools.SQLQuery) Runner {
+func NewRunner(serviceName string, serviceCfg configDomain.ServiceConfig, version string, server *mcpserver.Server, sqlTool tools.SQLQuery) Runner {
 	return Runner{
 		serviceName: serviceName,
 		serviceCfg:  serviceCfg,
+		version:     version,
 		server:      server,
 		sqlTool:     sqlTool,
 	}
@@ -71,7 +73,7 @@ func (r Runner) newVersionCommand() *cobra.Command {
 		Use:   "version",
 		Short: "Print service version",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println(r.serviceCfg.Version)
+			fmt.Println(r.version)
 		},
 	}
 }

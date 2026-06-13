@@ -22,14 +22,16 @@ type Container struct {
 	serviceName  string
 	serviceCfg   configDomain.ServiceConfig
 	environments map[string]configDomain.EnvironmentConfig
+	version      string
 }
 
-func New(aiRepository aiDomain.AIRepository, serviceName string, serviceCfg configDomain.ServiceConfig, environments map[string]configDomain.EnvironmentConfig) *Container {
+func New(aiRepository aiDomain.AIRepository, serviceName string, serviceCfg configDomain.ServiceConfig, environments map[string]configDomain.EnvironmentConfig, version string) *Container {
 	return &Container{
 		aiRepository: aiRepository,
 		serviceName:  serviceName,
 		serviceCfg:   serviceCfg,
 		environments: environments,
+		version:      version,
 	}
 }
 
@@ -111,7 +113,7 @@ func (c *Container) Build() (*di.Container, error) {
 		Build: func(ctn di.Container) (interface{}, error) {
 			server := ctn.Get("mcp.server").(*mcpserver.Server)
 			sqlTool := ctn.Get("mcp.sql.tool").(tools.SQLQuery)
-			return commands.NewRunner(c.serviceName, c.serviceCfg, server, sqlTool), nil
+				return commands.NewRunner(c.serviceName, c.serviceCfg, c.version, server, sqlTool), nil
 		},
 	})
 
