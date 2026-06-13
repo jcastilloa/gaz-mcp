@@ -13,12 +13,12 @@ import (
 )
 
 type PostgresRepository struct {
-	cfg  configDomain.PostgresConfig
-	dbs  map[string]*sql.DB
-	mu   sync.RWMutex
+	cfg configDomain.EnvironmentConfig
+	dbs map[string]*sql.DB
+	mu  sync.RWMutex
 }
 
-func NewPostgresRepository(cfg configDomain.PostgresConfig) (domain.Repository, error) {
+func NewPostgresRepository(cfg configDomain.EnvironmentConfig) (domain.Repository, error) {
 	return &PostgresRepository{
 		cfg: cfg,
 		dbs: make(map[string]*sql.DB),
@@ -40,18 +40,13 @@ func (r *PostgresRepository) getDB(database string) (*sql.DB, error) {
 		return db, nil
 	}
 
-	db, err := sql.Open("postgres", r.cfg.DSN(database))
+	db, err := sql.Open("postgres", r.cfg.PostgresDSN(database))
 	if err != nil {
 		return nil, fmt.Errorf("open postgres: %w", err)
 	}
 
 	db.SetMaxOpenConns(3)
 	db.SetMaxIdleConns(1)
-
-	if err := db.Ping(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("ping postgres: %w", err)
-	}
 
 	r.dbs[database] = db
 	return db, nil

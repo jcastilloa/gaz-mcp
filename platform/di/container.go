@@ -21,17 +21,15 @@ type Container struct {
 	aiRepository aiDomain.AIRepository
 	serviceName  string
 	serviceCfg   configDomain.ServiceConfig
-	mysqlCfg     configDomain.MySQLConfig
-	postgresCfg  configDomain.PostgresConfig
+	environments map[string]configDomain.EnvironmentConfig
 }
 
-func New(aiRepository aiDomain.AIRepository, serviceName string, serviceCfg configDomain.ServiceConfig, mysqlCfg configDomain.MySQLConfig, postgresCfg configDomain.PostgresConfig) *Container {
+func New(aiRepository aiDomain.AIRepository, serviceName string, serviceCfg configDomain.ServiceConfig, environments map[string]configDomain.EnvironmentConfig) *Container {
 	return &Container{
 		aiRepository: aiRepository,
 		serviceName:  serviceName,
 		serviceCfg:   serviceCfg,
-		mysqlCfg:     mysqlCfg,
-		postgresCfg:  postgresCfg,
+		environments: environments,
 	}
 }
 
@@ -41,70 +39,83 @@ func (c *Container) Build() (*di.Container, error) {
 		return nil, fmt.Errorf("create builder: %w", err)
 	}
 
-	err = builder.Add(
-		di.Def{
+	defs := []di.Def{
+		{
 			Name:  OpenAIRepositoryLabel,
 			Scope: di.App,
 			Build: func(ctn di.Container) (interface{}, error) {
 				return c.aiRepository, nil
 			},
 		},
-		di.Def{
-			Name:  "mcp.sql.mysql.repository",
-			Scope: di.App,
-			Build: func(ctn di.Container) (interface{}, error) {
-				return sqlInfra.NewMySQLRepository(c.mysqlCfg)
-			},
-		},
-		di.Def{
-			Name:  "mcp.sql.postgres.repository",
-			Scope: di.App,
-			Build: func(ctn di.Container) (interface{}, error) {
-				return sqlInfra.NewPostgresRepository(c.postgresCfg)
-			},
-		},
-		di.Def{
-			Name:  "mcp.sql.mysql.service",
-			Scope: di.App,
-			Build: func(ctn di.Container) (interface{}, error) {
-				repo := ctn.Get("mcp.sql.mysql.repository").(sqlDomain.Repository)
-				return sqlApp.NewService(repo), nil
-			},
-		},
-		di.Def{
-			Name:  "mcp.sql.postgres.service",
-			Scope: di.App,
-			Build: func(ctn di.Container) (interface{}, error) {
-				repo := ctn.Get("mcp.sql.postgres.repository").(sqlDomain.Repository)
-				return sqlApp.NewService(repo), nil
-			},
-		},
-		di.Def{
-			Name:  "mcp.sql.tool",
-			Scope: di.App,
-			Build: func(ctn di.Container) (interface{}, error) {
-				mysqlSvc := ctn.Get("mcp.sql.mysql.service").(sqlApp.Service)
-				postgresSvc := ctn.Get("mcp.sql.postgres.service").(sqlApp.Service)
-				return tools.NewSQLQuery(mysqlSvc, postgresSvc), nil
-			},
-		},
-		di.Def{
+		{
 			Name:  "mcp.server",
 			Scope: di.App,
 			Build: func(ctn di.Container) (interface{}, error) {
 				return mcpserver.New(c.serviceName, c.serviceCfg.Version), nil
 			},
 		},
-		di.Def{
-			Name:  commands.RootCommandLabel,
+	}
+
+	serviceLabels := make([]string, 0, len(c.environments))
+	for envName, envCfg := range c.environments {
+		repoLabel := "mcp.sql.repo." + envName
+		svcLabel := "mcp.sql.svc." + envName
+		serviceLabels = append(serviceLabels, svcLabel)
+
+		defs = append(defs, di.Def{
+			Name:  repoLabel,
 			Scope: di.App,
-			Build: func(ctn di.Container) (interface{}, error) {
-				server := ctn.Get("mcp.server").(*mcpserver.Server)
-				sqlTool := ctn.Get("mcp.sql.tool").(tools.SQLQuery)
-				return commands.NewRunner(c.serviceName, c.serviceCfg, server, sqlTool), nil
-			},
+			Build: func(cfg configDomain.EnvironmentConfig) func(ctn di.Container) (interface{}, error) {
+				return func(ctn di.Container) (interface{}, error) {
+					if cfg.Engine == "postgres" {
+						return sqlInfra.NewPostgresRepository(cfg)
+					}
+					return sqlInfra.NewMySQLRepository(cfg)
+				}
+			}(envCfg),
+		})
+
+		defs = append(defs, di.Def{
+			Name:  svcLabel,
+			Scope: di.App,
+			Build: func(label string) func(ctn di.Container) (interface{}, error) {
+				return func(ctn di.Container) (interface{}, error) {
+					repo := ctn.Get(label).(sqlDomain.Repository)
+					return sqlApp.NewService(repo), nil
+				}
+			}(repoLabel),
+		})
+	}
+
+	envNames := make([]string, 0, len(c.environments))
+	for name := range c.environments {
+		envNames = append(envNames, name)
+	}
+
+	defs = append(defs, di.Def{
+		Name:  "mcp.sql.tool",
+		Scope: di.App,
+		Build: func(ctn di.Container) (interface{}, error) {
+			services := make(map[string]sqlApp.Service, len(c.environments))
+			for _, envName := range envNames {
+				svcLabel := "mcp.sql.svc." + envName
+				services[envName] = ctn.Get(svcLabel).(sqlApp.Service)
+			}
+			return tools.NewSQLQuery(services), nil
 		},
-	)
+	})
+
+	defs = append(defs, di.Def{
+		Name:  commands.RootCommandLabel,
+		Scope: di.App,
+		Build: func(ctn di.Container) (interface{}, error) {
+			server := ctn.Get("mcp.server").(*mcpserver.Server)
+			sqlTool := ctn.Get("mcp.sql.tool").(tools.SQLQuery)
+			return commands.NewRunner(c.serviceName, c.serviceCfg, server, sqlTool), nil
+		},
+	})
+
+	err = builder.Add(defs...)
 	if err != nil {
 		return nil, fmt.Errorf("register dependencies: %w", err)
 	}

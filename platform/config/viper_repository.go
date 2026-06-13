@@ -56,22 +56,27 @@ func (r *ViperRepository) OpenAIProviderConfig() aiDomain.ProviderConfig {
 	}
 }
 
-func (r *ViperRepository) MySQLConfig() configDomain.MySQLConfig {
-	return configDomain.MySQLConfig{
-		Host:     r.v.GetString("mysql.host"),
-		Port:     r.v.GetInt("mysql.port"),
-		User:     r.v.GetString("mysql.user"),
-		Password: r.v.GetString("mysql.password"),
+func (r *ViperRepository) Environments() map[string]configDomain.EnvironmentConfig {
+	raw := r.v.GetStringMap("environments")
+	envs := make(map[string]configDomain.EnvironmentConfig, len(raw))
+	for name, val := range raw {
+		m, ok := val.(map[string]any)
+		if !ok {
+			continue
+		}
+		cfg := configDomain.EnvironmentConfig{
+			Engine:   stringVal(m, "engine"),
+			Host:     stringVal(m, "host"),
+			Port:     intVal(m, "port"),
+			User:     stringVal(m, "user"),
+			Password: stringVal(m, "password"),
+		}
+		if cfg.Engine == "" {
+			cfg.Engine = "mysql"
+		}
+		envs[name] = cfg
 	}
-}
-
-func (r *ViperRepository) PostgresConfig() configDomain.PostgresConfig {
-	return configDomain.PostgresConfig{
-		Host:     r.v.GetString("postgres.host"),
-		Port:     r.v.GetInt("postgres.port"),
-		User:     r.v.GetString("postgres.user"),
-		Password: r.v.GetString("postgres.password"),
-	}
+	return envs
 }
 
 func (r *ViperRepository) ServiceConfig() configDomain.ServiceConfig {
@@ -87,4 +92,27 @@ func (r *ViperRepository) ServiceConfig() configDomain.ServiceConfig {
 		Version:   version,
 		Transport: r.v.GetString("service.transport"),
 	}
+}
+
+func stringVal(m map[string]any, key string) string {
+	if v, ok := m[key]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+func intVal(m map[string]any, key string) int {
+	if v, ok := m[key]; ok {
+		switch n := v.(type) {
+		case int:
+			return n
+		case int64:
+			return int(n)
+		case float64:
+			return int(n)
+		}
+	}
+	return 0
 }

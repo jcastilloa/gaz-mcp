@@ -4,14 +4,14 @@ Read-only MySQL and PostgreSQL proxy exposed as an MCP server. Lets AI coding ag
 
 ## Overview
 
-`gaz-mcp` wraps MySQL and PostgreSQL connections in an MCP-compatible stdio server. AI agents call the `sql_query` tool to inspect tables, describe columns, and query data across both engines.
+`gaz-mcp` wraps MySQL and PostgreSQL connections in an MCP-compatible stdio server. AI agents call the `sql_query` tool to inspect tables, describe columns, and query data across multiple environments (e.g. `dev1`, `dev2`, `production`).
 
-Every query runs inside a **read-only database transaction** and is validated at the application layer. Write statements (`INSERT`, `UPDATE`, `DELETE`, `DROP`, etc.) are rejected before they reach the database.
+Each environment bundles engine type + connection credentials. The agent only needs to know the environment name — the engine is transparent.
 
 ## Features
 
 - **MCP stdio server** — one binary, no daemon, no network ports.
-- **MySQL + PostgreSQL** — dual-engine support, selectable per query via `type` parameter.
+- **Multi-environment** — configure MySQL and PostgreSQL environments; switch per query.
 - **Read-only enforcement** — app-level keyword block + engine-level read-only transaction.
 - **Dynamic database selection** — the agent picks the target database per query, not from config.
 - **JSON output** — `{columns, rows}` response, easy to parse.
@@ -84,22 +84,25 @@ service:
   transport: stdio
   version: 0.1.0
 
-mysql:
-  host: 127.0.0.1
-  port: 3306
-  user: readonly_user
-  password: your-password
+environments:
+  dev1:
+    engine: mysql
+    host: 127.0.0.1
+    port: 3306
+    user: readonly_user
+    password: your-password
 
-postgres:
-  host: 127.0.0.1
-  port: 5432
-  user: postgres
-  password: your-password
+  analytics:
+    engine: postgres
+    host: 127.0.0.1
+    port: 5432
+    user: postgres
+    password: your-password
 ```
 
-All keys support environment variable overrides (`MYSQL_HOST`, `POSTGRES_HOST`, etc.).
+All keys support environment variable overrides.
 
-The `database` is **not** configured statically — the AI agent passes it as a tool parameter per query.
+`engine` defaults to `mysql` when omitted. The `database` is passed per query, not configured statically.
 
 ## Quick Start
 
@@ -162,13 +165,15 @@ Follow the prompts: project or global → name `gaz-mcp` → type `local` → co
 
 ### `sql_query`
 
-Execute a read-only SQL query against MySQL or PostgreSQL.
+Execute a read-only SQL query against a configured environment.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `type` | string | no | Database engine: `mysql` or `postgres` (default: `mysql`) |
+| `environment` | string | yes | Environment name (e.g. `dev1`, `analytics`) |
 | `database` | string | yes | Database name to query |
 | `query` | string | yes | SQL query — `SELECT`, `SHOW`, `DESCRIBE`, `EXPLAIN` |
+
+The tool description dynamically lists all available environments from config.
 
 **Returns:** JSON object with `columns` (string array) and `rows` (array of string arrays).
 
@@ -179,10 +184,9 @@ Execute a read-only SQL query against MySQL or PostgreSQL.
 ### Example agent interactions
 
 ```
-sql_query(database="myapp", query="SHOW TABLES")
-sql_query(database="myapp", query="DESCRIBE users")
-sql_query(type="postgres", database="analytics", query="SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname='public' LIMIT 20")
-sql_query(type="postgres", database="analytics", query="SELECT * FROM users LIMIT 10")
+sql_query(environment="dev1", database="myapp", query="SHOW TABLES")
+sql_query(environment="dev1", database="myapp", query="SELECT id, email FROM users LIMIT 20")
+sql_query(environment="analytics", database="reporting", query="SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname='public'")
 ```
 
 ## Architecture

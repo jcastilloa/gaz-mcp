@@ -15,7 +15,7 @@ type MySQLRepository struct {
 	db *sql.DB
 }
 
-func NewMySQLRepository(cfg configDomain.MySQLConfig) (domain.Repository, error) {
+func NewMySQLRepository(cfg configDomain.EnvironmentConfig) (domain.Repository, error) {
 	db, err := sql.Open("mysql", cfg.DSN())
 	if err != nil {
 		return nil, fmt.Errorf("open mysql: %w", err)
@@ -23,11 +23,6 @@ func NewMySQLRepository(cfg configDomain.MySQLConfig) (domain.Repository, error)
 
 	db.SetMaxOpenConns(3)
 	db.SetMaxIdleConns(1)
-
-	if err := db.Ping(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("ping mysql: %w", err)
-	}
 
 	return &MySQLRepository{db: db}, nil
 }

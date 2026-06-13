@@ -2,17 +2,20 @@ service:
   transport: stdio
   version: 0.1.0
 
-mysql:
-  host: 127.0.0.1
-  port: 3306
-  user: root
-  password: changeme
+environments:
+  dev1:
+    engine: mysql
+    host: 127.0.0.1
+    port: 3306
+    user: root
+    password: changeme
 
-postgres:
-  host: 127.0.0.1
-  port: 5432
-  user: postgres
-  password: changeme
+  analytics:
+    engine: postgres
+    host: 127.0.0.1
+    port: 5432
+    user: postgres
+    password: changeme
 
 openai:
   provider_name: openai

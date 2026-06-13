@@ -46,7 +46,7 @@ gaz-mcp/
 
 | Tool        | Parameters                        | Description                                               |
 |-------------|-----------------------------------|-----------------------------------------------------------|
-| `sql_query` | `type`, `database`, `query`       | Read-only SQL against MySQL or PostgreSQL                 |
+| `sql_query` | `environment`, `database`, `query` | Read-only SQL across environments (MySQL + PostgreSQL) |
 
 ## MCP Convention
 
