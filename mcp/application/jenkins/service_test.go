@@ -1224,3 +1224,1199 @@ func TestNoopSnapshotRepository_Close_ReturnsNil(t *testing.T) {
 		t.Errorf("expected nil from Close, got %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Tests — QuietDown / CancelQuietDown pass-through
+// ---------------------------------------------------------------------------
+
+func TestService_QuietDown(t *testing.T) {
+	called := false
+	repo := &fakeRepo{
+		quietDownFn: func(_ context.Context) error {
+			called = true
+			return nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.QuietDown(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("expected QuietDown to be called on repo")
+	}
+}
+
+func TestService_QuietDown_Error(t *testing.T) {
+	repo := &fakeRepo{
+		quietDownFn: func(_ context.Context) error {
+			return errors.New("quiet down failed")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.QuietDown(context.Background()); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestService_CancelQuietDown(t *testing.T) {
+	called := false
+	repo := &fakeRepo{
+		cancelQuietFn: func(_ context.Context) error {
+			called = true
+			return nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.CancelQuietDown(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("expected CancelQuietDown to be called on repo")
+	}
+}
+
+func TestService_CancelQuietDown_Error(t *testing.T) {
+	repo := &fakeRepo{
+		cancelQuietFn: func(_ context.Context) error {
+			return errors.New("cancel quiet failed")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.CancelQuietDown(context.Background()); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — JobGet / JobConfig pass-through
+// ---------------------------------------------------------------------------
+
+func TestService_JobGet(t *testing.T) {
+	expected := &domain.JobInfo{Name: "my-job", URL: "http://jenkins/job/my-job"}
+	repo := &fakeRepo{
+		jobGetFn: func(_ context.Context, name string) (*domain.JobInfo, error) {
+			return expected, nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	info, err := svc.JobGet(context.Background(), "my-job")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if info.Name != "my-job" {
+		t.Errorf("expected name 'my-job', got %s", info.Name)
+	}
+}
+
+func TestService_JobGet_Error(t *testing.T) {
+	repo := &fakeRepo{
+		jobGetFn: func(_ context.Context, name string) (*domain.JobInfo, error) {
+			return nil, errors.New("not found")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	_, err := svc.JobGet(context.Background(), "missing")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestService_JobConfig(t *testing.T) {
+	const xml = "<project/>"
+	repo := &fakeRepo{
+		jobConfigFn: func(_ context.Context, name string) (string, error) {
+			return xml, nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	cfg, err := svc.JobConfig(context.Background(), "my-job")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg != xml {
+		t.Errorf("expected %q, got %q", xml, cfg)
+	}
+}
+
+func TestService_JobConfig_Error(t *testing.T) {
+	repo := &fakeRepo{
+		jobConfigFn: func(_ context.Context, name string) (string, error) {
+			return "", errors.New("job not found")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	_, err := svc.JobConfig(context.Background(), "missing")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — JobEnable / JobDisable pass-through
+// ---------------------------------------------------------------------------
+
+func TestService_JobEnable(t *testing.T) {
+	called := false
+	repo := &fakeRepo{
+		jobEnableFn: func(_ context.Context, name string) error {
+			called = true
+			return nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.JobEnable(context.Background(), "my-job"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("expected JobEnable to be called on repo")
+	}
+}
+
+func TestService_JobEnable_Error(t *testing.T) {
+	repo := &fakeRepo{
+		jobEnableFn: func(_ context.Context, name string) error {
+			return errors.New("enable failed")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.JobEnable(context.Background(), "my-job"); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestService_JobDisable(t *testing.T) {
+	called := false
+	repo := &fakeRepo{
+		jobDisableFn: func(_ context.Context, name string) error {
+			called = true
+			return nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.JobDisable(context.Background(), "my-job"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("expected JobDisable to be called on repo")
+	}
+}
+
+func TestService_JobDisable_Error(t *testing.T) {
+	repo := &fakeRepo{
+		jobDisableFn: func(_ context.Context, name string) error {
+			return errors.New("disable failed")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.JobDisable(context.Background(), "my-job"); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — Build pass-through methods
+// ---------------------------------------------------------------------------
+
+func TestService_BuildLog(t *testing.T) {
+	repo := &fakeRepo{
+		buildLogFn: func(_ context.Context, jobName string, buildNum int, startLine int) (string, int, error) {
+			return "line1\nline2\n", 2, nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	log, nextLine, err := svc.BuildLog(context.Background(), "my-job", 1, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if log != "line1\nline2\n" {
+		t.Errorf("unexpected log content: %q", log)
+	}
+	if nextLine != 2 {
+		t.Errorf("expected nextLine 2, got %d", nextLine)
+	}
+}
+
+func TestService_BuildLog_Error(t *testing.T) {
+	repo := &fakeRepo{
+		buildLogFn: func(_ context.Context, jobName string, buildNum int, startLine int) (string, int, error) {
+			return "", 0, errors.New("build not found")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	_, _, err := svc.BuildLog(context.Background(), "my-job", 999, 0)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestService_BuildLogProgressive(t *testing.T) {
+	repo := &fakeRepo{
+		buildLogProgressiveFn: func(_ context.Context, jobName string, buildNum int) (string, error) {
+			return "progressive output", nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	out, err := svc.BuildLogProgressive(context.Background(), "my-job", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out != "progressive output" {
+		t.Errorf("unexpected output: %q", out)
+	}
+}
+
+func TestService_BuildLogProgressive_Error(t *testing.T) {
+	repo := &fakeRepo{
+		buildLogProgressiveFn: func(_ context.Context, jobName string, buildNum int) (string, error) {
+			return "", errors.New("build not found")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	_, err := svc.BuildLogProgressive(context.Background(), "my-job", 999)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestService_BuildStop(t *testing.T) {
+	called := false
+	repo := &fakeRepo{
+		buildStopFn: func(_ context.Context, jobName string, buildNum int) error {
+			called = true
+			return nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.BuildStop(context.Background(), "my-job", 1); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("expected BuildStop to be called on repo")
+	}
+}
+
+func TestService_BuildStop_Error(t *testing.T) {
+	repo := &fakeRepo{
+		buildStopFn: func(_ context.Context, jobName string, buildNum int) error {
+			return errors.New("stop failed")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.BuildStop(context.Background(), "my-job", 1); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestService_BuildDelete(t *testing.T) {
+	called := false
+	repo := &fakeRepo{
+		buildDeleteFn: func(_ context.Context, jobName string, buildNum int) error {
+			called = true
+			return nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.BuildDelete(context.Background(), "my-job", 1); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("expected BuildDelete to be called on repo")
+	}
+}
+
+func TestService_BuildDelete_Error(t *testing.T) {
+	repo := &fakeRepo{
+		buildDeleteFn: func(_ context.Context, jobName string, buildNum int) error {
+			return errors.New("delete failed")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.BuildDelete(context.Background(), "my-job", 1); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestService_BuildArtifacts(t *testing.T) {
+	expected := []domain.Artifact{{Name: "app.jar", Path: "target/app.jar"}}
+	repo := &fakeRepo{
+		buildArtifactsFn: func(_ context.Context, jobName string, buildNum int) ([]domain.Artifact, error) {
+			return expected, nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	artifacts, err := svc.BuildArtifacts(context.Background(), "my-job", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(artifacts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(artifacts))
+	}
+	if artifacts[0].Name != "app.jar" {
+		t.Errorf("expected 'app.jar', got %s", artifacts[0].Name)
+	}
+}
+
+func TestService_BuildArtifacts_Error(t *testing.T) {
+	repo := &fakeRepo{
+		buildArtifactsFn: func(_ context.Context, jobName string, buildNum int) ([]domain.Artifact, error) {
+			return nil, errors.New("build not found")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	_, err := svc.BuildArtifacts(context.Background(), "my-job", 999)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — Node pass-through methods
+// ---------------------------------------------------------------------------
+
+func TestService_NodeList(t *testing.T) {
+	expected := []domain.NodeInfo{{Name: "agent-01", Online: true}, {Name: "agent-02", Online: false}}
+	repo := &fakeRepo{
+		nodeListFn: func(_ context.Context) ([]domain.NodeInfo, error) {
+			return expected, nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	nodes, err := svc.NodeList(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(nodes) != 2 {
+		t.Errorf("expected 2 nodes, got %d", len(nodes))
+	}
+}
+
+func TestService_NodeList_Error(t *testing.T) {
+	repo := &fakeRepo{
+		nodeListFn: func(_ context.Context) ([]domain.NodeInfo, error) {
+			return nil, errors.New("connection refused")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	_, err := svc.NodeList(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestService_NodeGet(t *testing.T) {
+	expected := &domain.NodeInfo{Name: "agent-01", Online: true, Idle: true}
+	repo := &fakeRepo{
+		nodeGetFn: func(_ context.Context, name string) (*domain.NodeInfo, error) {
+			return expected, nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	node, err := svc.NodeGet(context.Background(), "agent-01")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if node.Name != "agent-01" {
+		t.Errorf("expected 'agent-01', got %s", node.Name)
+	}
+}
+
+func TestService_NodeGet_Error(t *testing.T) {
+	repo := &fakeRepo{
+		nodeGetFn: func(_ context.Context, name string) (*domain.NodeInfo, error) {
+			return nil, errors.New("node not found")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	_, err := svc.NodeGet(context.Background(), "missing")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestService_NodeDelete(t *testing.T) {
+	called := false
+	repo := &fakeRepo{
+		nodeDeleteFn: func(_ context.Context, name string) error {
+			called = true
+			return nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.NodeDelete(context.Background(), "agent-01"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("expected NodeDelete to be called on repo")
+	}
+}
+
+func TestService_NodeDelete_Error(t *testing.T) {
+	repo := &fakeRepo{
+		nodeDeleteFn: func(_ context.Context, name string) error {
+			return errors.New("delete failed")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.NodeDelete(context.Background(), "agent-01"); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestService_NodeEnable(t *testing.T) {
+	called := false
+	repo := &fakeRepo{
+		nodeEnableFn: func(_ context.Context, name string) error {
+			called = true
+			return nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.NodeEnable(context.Background(), "agent-01"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("expected NodeEnable to be called on repo")
+	}
+}
+
+func TestService_NodeEnable_Error(t *testing.T) {
+	repo := &fakeRepo{
+		nodeEnableFn: func(_ context.Context, name string) error {
+			return errors.New("enable failed")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.NodeEnable(context.Background(), "agent-01"); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestService_NodeDisable(t *testing.T) {
+	var gotMsg string
+	repo := &fakeRepo{
+		nodeDisableFn: func(_ context.Context, name string, message string) error {
+			gotMsg = message
+			return nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.NodeDisable(context.Background(), "agent-01", "maintenance"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotMsg != "maintenance" {
+		t.Errorf("expected message 'maintenance', got %q", gotMsg)
+	}
+}
+
+func TestService_NodeDisable_Error(t *testing.T) {
+	repo := &fakeRepo{
+		nodeDisableFn: func(_ context.Context, name string, message string) error {
+			return errors.New("disable failed")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.NodeDisable(context.Background(), "agent-01", ""); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestService_NodeDisconnect(t *testing.T) {
+	var gotMsg string
+	repo := &fakeRepo{
+		nodeDisconnectFn: func(_ context.Context, name string, message string) error {
+			gotMsg = message
+			return nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.NodeDisconnect(context.Background(), "agent-01", "going offline"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotMsg != "going offline" {
+		t.Errorf("expected message 'going offline', got %q", gotMsg)
+	}
+}
+
+func TestService_NodeDisconnect_Error(t *testing.T) {
+	repo := &fakeRepo{
+		nodeDisconnectFn: func(_ context.Context, name string, message string) error {
+			return errors.New("disconnect failed")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.NodeDisconnect(context.Background(), "agent-01", ""); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — View pass-through methods
+// ---------------------------------------------------------------------------
+
+func TestService_ViewList(t *testing.T) {
+	expected := []domain.ViewInfo{{Name: "All"}, {Name: "Deploy"}}
+	repo := &fakeRepo{
+		viewListFn: func(_ context.Context) ([]domain.ViewInfo, error) {
+			return expected, nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	views, err := svc.ViewList(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(views) != 2 {
+		t.Errorf("expected 2 views, got %d", len(views))
+	}
+}
+
+func TestService_ViewList_Error(t *testing.T) {
+	repo := &fakeRepo{
+		viewListFn: func(_ context.Context) ([]domain.ViewInfo, error) {
+			return nil, errors.New("connection refused")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	_, err := svc.ViewList(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestService_ViewGet(t *testing.T) {
+	expected := &domain.ViewInfo{Name: "Deploy", URL: "http://jenkins/view/Deploy"}
+	repo := &fakeRepo{
+		viewGetFn: func(_ context.Context, name string) (*domain.ViewInfo, error) {
+			return expected, nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	view, err := svc.ViewGet(context.Background(), "Deploy")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if view.Name != "Deploy" {
+		t.Errorf("expected 'Deploy', got %s", view.Name)
+	}
+}
+
+func TestService_ViewGet_Error(t *testing.T) {
+	repo := &fakeRepo{
+		viewGetFn: func(_ context.Context, name string) (*domain.ViewInfo, error) {
+			return nil, errors.New("view not found")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	_, err := svc.ViewGet(context.Background(), "missing")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestService_ViewDelete(t *testing.T) {
+	called := false
+	repo := &fakeRepo{
+		viewDeleteFn: func(_ context.Context, name string) error {
+			called = true
+			return nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.ViewDelete(context.Background(), "Deploy"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("expected ViewDelete to be called on repo")
+	}
+}
+
+func TestService_ViewDelete_Error(t *testing.T) {
+	repo := &fakeRepo{
+		viewDeleteFn: func(_ context.Context, name string) error {
+			return errors.New("delete failed")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.ViewDelete(context.Background(), "Deploy"); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestService_ViewAddJob(t *testing.T) {
+	var gotView, gotJob string
+	repo := &fakeRepo{
+		viewAddJobFn: func(_ context.Context, viewName, jobName string) error {
+			gotView, gotJob = viewName, jobName
+			return nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.ViewAddJob(context.Background(), "Deploy", "my-job"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotView != "Deploy" || gotJob != "my-job" {
+		t.Errorf("expected (Deploy, my-job), got (%s, %s)", gotView, gotJob)
+	}
+}
+
+func TestService_ViewAddJob_Error(t *testing.T) {
+	repo := &fakeRepo{
+		viewAddJobFn: func(_ context.Context, viewName, jobName string) error {
+			return errors.New("add failed")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.ViewAddJob(context.Background(), "Deploy", "my-job"); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestService_ViewRemoveJob(t *testing.T) {
+	var gotView, gotJob string
+	repo := &fakeRepo{
+		viewRemoveJobFn: func(_ context.Context, viewName, jobName string) error {
+			gotView, gotJob = viewName, jobName
+			return nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.ViewRemoveJob(context.Background(), "Deploy", "my-job"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotView != "Deploy" || gotJob != "my-job" {
+		t.Errorf("expected (Deploy, my-job), got (%s, %s)", gotView, gotJob)
+	}
+}
+
+func TestService_ViewRemoveJob_Error(t *testing.T) {
+	repo := &fakeRepo{
+		viewRemoveJobFn: func(_ context.Context, viewName, jobName string) error {
+			return errors.New("remove failed")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.ViewRemoveJob(context.Background(), "Deploy", "my-job"); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — Queue pass-through methods
+// ---------------------------------------------------------------------------
+
+func TestService_QueueList(t *testing.T) {
+	expected := []domain.QueueItem{{ID: 1, Task: "my-job"}, {ID: 2, Task: "other-job"}}
+	repo := &fakeRepo{
+		queueListFn: func(_ context.Context) ([]domain.QueueItem, error) {
+			return expected, nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	items, err := svc.QueueList(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(items) != 2 {
+		t.Errorf("expected 2 items, got %d", len(items))
+	}
+	if items[0].ID != 1 {
+		t.Errorf("expected ID 1, got %d", items[0].ID)
+	}
+}
+
+func TestService_QueueList_Error(t *testing.T) {
+	repo := &fakeRepo{
+		queueListFn: func(_ context.Context) ([]domain.QueueItem, error) {
+			return nil, errors.New("connection refused")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	_, err := svc.QueueList(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestService_QueueCancel(t *testing.T) {
+	var gotID int64
+	repo := &fakeRepo{
+		queueCancelFn: func(_ context.Context, id int64) error {
+			gotID = id
+			return nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.QueueCancel(context.Background(), 42); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotID != 42 {
+		t.Errorf("expected ID 42, got %d", gotID)
+	}
+}
+
+func TestService_QueueCancel_Error(t *testing.T) {
+	repo := &fakeRepo{
+		queueCancelFn: func(_ context.Context, id int64) error {
+			return errors.New("cancel failed")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.QueueCancel(context.Background(), 42); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — PluginList pass-through
+// ---------------------------------------------------------------------------
+
+func TestService_PluginList(t *testing.T) {
+	expected := []domain.PluginInfo{
+		{ShortName: "git", Version: "4.11.0", Enabled: true},
+		{ShortName: "workflow-aggregator", Version: "2.6", Enabled: true},
+	}
+	repo := &fakeRepo{
+		pluginListFn: func(_ context.Context) ([]domain.PluginInfo, error) {
+			return expected, nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	plugins, err := svc.PluginList(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(plugins) != 2 {
+		t.Errorf("expected 2 plugins, got %d", len(plugins))
+	}
+	if plugins[0].ShortName != "git" {
+		t.Errorf("expected 'git', got %s", plugins[0].ShortName)
+	}
+}
+
+func TestService_PluginList_Error(t *testing.T) {
+	repo := &fakeRepo{
+		pluginListFn: func(_ context.Context) ([]domain.PluginInfo, error) {
+			return nil, errors.New("connection refused")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	_, err := svc.PluginList(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — Credential pass-through methods
+// ---------------------------------------------------------------------------
+
+func TestService_CredentialList(t *testing.T) {
+	expected := []domain.CredentialInfo{{ID: "my-cred", Description: "GitHub token"}}
+	repo := &fakeRepo{
+		credentialListFn: func(_ context.Context, store, d string) ([]domain.CredentialInfo, error) {
+			return expected, nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	creds, err := svc.CredentialList(context.Background(), "system", "_")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(creds) != 1 {
+		t.Fatalf("expected 1 credential, got %d", len(creds))
+	}
+	if creds[0].ID != "my-cred" {
+		t.Errorf("expected 'my-cred', got %s", creds[0].ID)
+	}
+}
+
+func TestService_CredentialList_Error(t *testing.T) {
+	repo := &fakeRepo{
+		credentialListFn: func(_ context.Context, store, d string) ([]domain.CredentialInfo, error) {
+			return nil, errors.New("store not found")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	_, err := svc.CredentialList(context.Background(), "system", "_")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestService_CredentialDelete(t *testing.T) {
+	var gotStore, gotDomain, gotID string
+	repo := &fakeRepo{
+		credentialDeleteFn: func(_ context.Context, store, d, id string) error {
+			gotStore, gotDomain, gotID = store, d, id
+			return nil
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.CredentialDelete(context.Background(), "system", "_", "my-cred"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotStore != "system" || gotDomain != "_" || gotID != "my-cred" {
+		t.Errorf("unexpected args: store=%s domain=%s id=%s", gotStore, gotDomain, gotID)
+	}
+}
+
+func TestService_CredentialDelete_Error(t *testing.T) {
+	repo := &fakeRepo{
+		credentialDeleteFn: func(_ context.Context, store, d, id string) error {
+			return errors.New("delete failed")
+		},
+	}
+	svc := newService(repo, &jenkins.NoopSnapshotRepository{}, 0)
+	if err := svc.CredentialDelete(context.Background(), "system", "_", "my-cred"); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — SnapshotGet pass-through
+// ---------------------------------------------------------------------------
+
+func TestService_SnapshotGet(t *testing.T) {
+	const xml = "<project><v3/></project>"
+	snap := &fakeSnapshotRepo{
+		getFn: func(_ context.Context, _ string, _ domain.SnapshotType, _ string, version int) (string, error) {
+			if version == 3 {
+				return xml, nil
+			}
+			return "", errors.New("not found")
+		},
+	}
+	svc := newService(&fakeRepo{}, snap, 0)
+	got, err := svc.SnapshotGet(context.Background(), "prod", domain.SnapshotJob, "my-job", 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != xml {
+		t.Errorf("expected %q, got %q", xml, got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — JobSetConfig snapshot error path
+// ---------------------------------------------------------------------------
+
+func TestService_JobSetConfig_SnapshotError(t *testing.T) {
+	const currentXML = "<project><old/></project>"
+	const newXML = "<project><new/></project>"
+
+	repo := &fakeRepo{
+		jobConfigFn: func(_ context.Context, name string) (string, error) {
+			return currentXML, nil
+		},
+	}
+	svc := newService(repo, &errorSnapshotRepo{}, 0)
+
+	_, err := svc.JobSetConfig(context.Background(), "prod", "my-job", newXML)
+	if err == nil {
+		t.Fatal("expected error when snapshot fails before update, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — JobCopy snapshot error path
+// ---------------------------------------------------------------------------
+
+func TestService_JobCopy_SnapshotError(t *testing.T) {
+	repo := &fakeRepo{
+		jobConfigFn: func(_ context.Context, name string) (string, error) {
+			return "<project/>", nil
+		},
+	}
+	svc := newService(repo, &errorSnapshotRepo{}, 0)
+
+	_, err := svc.JobCopy(context.Background(), "prod", "src-job", "dst-job")
+	if err == nil {
+		t.Fatal("expected error when snapshot fails after copy, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — JobDelete snapshot error path
+// ---------------------------------------------------------------------------
+
+func TestService_JobDelete_SnapshotError(t *testing.T) {
+	repo := &fakeRepo{
+		jobConfigFn: func(_ context.Context, name string) (string, error) {
+			return "<project/>", nil
+		},
+	}
+	svc := newService(repo, &errorSnapshotRepo{}, 0)
+
+	_, err := svc.JobDelete(context.Background(), "prod", "my-job")
+	if err == nil {
+		t.Fatal("expected error when snapshot fails before delete, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — NodeCreate / ViewCreate / CredentialCreate repo error paths
+// ---------------------------------------------------------------------------
+
+func TestService_NodeCreate_RepoError(t *testing.T) {
+	repo := &fakeRepo{
+		nodeCreateFn: func(_ context.Context, name, configXML string) error {
+			return errors.New("node create failed")
+		},
+	}
+	svc := newService(repo, &fakeSnapshotRepo{}, 0)
+	_, err := svc.NodeCreate(context.Background(), "prod", "agent-01", "<slave/>")
+	if err == nil {
+		t.Fatal("expected error when NodeCreate repo fails, got nil")
+	}
+}
+
+func TestService_ViewCreate_RepoError(t *testing.T) {
+	repo := &fakeRepo{
+		viewCreateFn: func(_ context.Context, name, configXML string) error {
+			return errors.New("view create failed")
+		},
+	}
+	svc := newService(repo, &fakeSnapshotRepo{}, 0)
+	_, err := svc.ViewCreate(context.Background(), "prod", "my-view", "<listView/>")
+	if err == nil {
+		t.Fatal("expected error when ViewCreate repo fails, got nil")
+	}
+}
+
+func TestService_CredentialCreate_RepoError(t *testing.T) {
+	repo := &fakeRepo{
+		credentialCreateFn: func(_ context.Context, store, d, id, configXML string) error {
+			return errors.New("credential create failed")
+		},
+	}
+	svc := newService(repo, &fakeSnapshotRepo{}, 0)
+	_, err := svc.CredentialCreate(context.Background(), "prod", "system", "_", "my-cred", "<cred/>")
+	if err == nil {
+		t.Fatal("expected error when CredentialCreate repo fails, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — SnapshotRestore post-restore snapshot error path
+// ---------------------------------------------------------------------------
+
+func TestService_SnapshotRestore_PostRestoreSnapshotError(t *testing.T) {
+	// The restore applies successfully but the final "record restore" snapshot fails.
+	const targetXML = "<project><v1/></project>"
+
+	callCount := 0
+	snap := &fakeSnapshotRepo{
+		getFn: func(_ context.Context, _ string, _ domain.SnapshotType, _ string, _ int) (string, error) {
+			return targetXML, nil
+		},
+	}
+	// Fail on the 2nd Snapshot call (1st = safety, 2nd = post-restore record)
+	errOnSecond := &errorOnNthSnapshotRepo{failOn: 2, delegate: snap}
+	repo := &fakeRepo{
+		// getConfigXML returns empty for SnapshotJob when jobConfigFn is nil — but we need it to return something
+		// so the safety snapshot is attempted. Use a non-nil jobConfigFn:
+		jobConfigFn: func(_ context.Context, name string) (string, error) {
+			callCount++
+			return "<project><current/></project>", nil
+		},
+	}
+	svc := newService(repo, errOnSecond, 0)
+
+	err := svc.SnapshotRestore(context.Background(), "prod", domain.SnapshotJob, "my-job", 1)
+	if err == nil {
+		t.Fatal("expected error when post-restore snapshot fails, got nil")
+	}
+}
+
+func TestService_SnapshotGet_Error(t *testing.T) {
+	snap := &fakeSnapshotRepo{
+		getFn: func(_ context.Context, _ string, _ domain.SnapshotType, _ string, version int) (string, error) {
+			return "", errors.New("version not found")
+		},
+	}
+	svc := newService(&fakeRepo{}, snap, 0)
+	_, err := svc.SnapshotGet(context.Background(), "prod", domain.SnapshotJob, "my-job", 99)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — snapshotXML error path (Snapshot repo returns error)
+// ---------------------------------------------------------------------------
+
+func TestService_SnapshotXML_SnapshotRepoError(t *testing.T) {
+	snap := &fakeSnapshotRepo{
+		// Override Snapshot to return an error
+	}
+	// We need a custom fakeSnapshotRepo that errors on Snapshot
+	errSnap := &errorSnapshotRepo{}
+	svc := newService(&fakeRepo{}, errSnap, 0)
+
+	// JobCreate calls snapshotXML after creating the job
+	_, err := svc.JobCreate(context.Background(), "prod", "my-job", "<project/>")
+	if err == nil {
+		t.Fatal("expected error when snapshot repo fails, got nil")
+	}
+	_ = snap // suppress unused warning
+}
+
+// errorSnapshotRepo always returns an error from Snapshot.
+type errorSnapshotRepo struct{}
+
+func (r *errorSnapshotRepo) Snapshot(_ context.Context, _ string, _ domain.SnapshotType, _, _ string, _ domain.SnapshotOperation) (int, error) {
+	return 0, errors.New("snapshot storage failed")
+}
+func (r *errorSnapshotRepo) ListSnapshots(_ context.Context, _ string, _ domain.SnapshotType, _ string, _, _ int) ([]domain.SnapshotInfo, error) {
+	return nil, nil
+}
+func (r *errorSnapshotRepo) GetSnapshot(_ context.Context, _ string, _ domain.SnapshotType, _ string, _ int) (string, error) {
+	return "", errors.New("snapshots disabled")
+}
+func (r *errorSnapshotRepo) LatestSnapshot(_ context.Context, _ string, _ domain.SnapshotType, _ string) (*domain.SnapshotInfo, string, error) {
+	return nil, "", nil
+}
+func (r *errorSnapshotRepo) Prune(_ context.Context, _ string, _ domain.SnapshotType, _ string, _ int) (int, error) {
+	return 0, nil
+}
+func (r *errorSnapshotRepo) Count(_ context.Context, _ string, _ domain.SnapshotType, _ string) (int, error) {
+	return 0, nil
+}
+func (r *errorSnapshotRepo) Close() error { return nil }
+
+// ---------------------------------------------------------------------------
+// Tests — getConfigXML default branch (non-Job/Folder types return empty)
+// ---------------------------------------------------------------------------
+
+func TestService_SnapshotRestore_NodeType_GetConfigXMLReturnsEmpty(t *testing.T) {
+	// For SnapshotNode, getConfigXML returns ("", nil) — no safety snapshot is taken.
+	// The restore should still apply the config via setConfigXML, which will fail
+	// because setConfigXML doesn't support Node type — so we get an error from setConfigXML.
+	const targetXML = "<slave/>"
+	snap := &fakeSnapshotRepo{
+		getFn: func(_ context.Context, _ string, _ domain.SnapshotType, _ string, _ int) (string, error) {
+			return targetXML, nil
+		},
+	}
+	svc := newService(&fakeRepo{}, snap, 0)
+
+	// SnapshotNode hits the default branch in setConfigXML → error
+	err := svc.SnapshotRestore(context.Background(), "prod", domain.SnapshotNode, "agent-01", 1)
+	if err == nil {
+		t.Fatal("expected error for unsupported object type in setConfigXML, got nil")
+	}
+	// No safety snapshot should have been taken (getConfigXML returned "")
+	if len(snap.snapshots) != 0 {
+		t.Errorf("expected no safety snapshot for node type, got %d", len(snap.snapshots))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — setConfigXML default branch (unsupported type returns error)
+// ---------------------------------------------------------------------------
+
+func TestService_SnapshotRestore_UnsupportedType_SetConfigXMLError(t *testing.T) {
+	// SnapshotCredential hits the default branch in setConfigXML
+	const targetXML = "<credential/>"
+	snap := &fakeSnapshotRepo{
+		getFn: func(_ context.Context, _ string, _ domain.SnapshotType, _ string, _ int) (string, error) {
+			return targetXML, nil
+		},
+	}
+	svc := newService(&fakeRepo{}, snap, 0)
+
+	err := svc.SnapshotRestore(context.Background(), "prod", domain.SnapshotCredential, "my-cred", 1)
+	if err == nil {
+		t.Fatal("expected error for unsupported type in setConfigXML, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — NodeCreate / ViewCreate / CredentialCreate snapshot error paths
+// ---------------------------------------------------------------------------
+
+func TestService_NodeCreate_SnapshotError(t *testing.T) {
+	svc := newService(&fakeRepo{}, &errorSnapshotRepo{}, 0)
+	_, err := svc.NodeCreate(context.Background(), "prod", "agent-01", "<slave/>")
+	if err == nil {
+		t.Fatal("expected error when snapshot fails after NodeCreate, got nil")
+	}
+}
+
+func TestService_ViewCreate_SnapshotError(t *testing.T) {
+	svc := newService(&fakeRepo{}, &errorSnapshotRepo{}, 0)
+	_, err := svc.ViewCreate(context.Background(), "prod", "my-view", "<listView/>")
+	if err == nil {
+		t.Fatal("expected error when snapshot fails after ViewCreate, got nil")
+	}
+}
+
+func TestService_CredentialCreate_SnapshotError(t *testing.T) {
+	svc := newService(&fakeRepo{}, &errorSnapshotRepo{}, 0)
+	_, err := svc.CredentialCreate(context.Background(), "prod", "system", "_", "my-cred", "<cred/>")
+	if err == nil {
+		t.Fatal("expected error when snapshot fails after CredentialCreate, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — SnapshotRestore safety snapshot error path
+// ---------------------------------------------------------------------------
+
+func TestService_SnapshotRestore_SafetySnapshotError(t *testing.T) {
+	// Safety snapshot fails → restore is aborted
+	const targetXML = "<project><v1/></project>"
+	const currentXML = "<project><current/></project>"
+
+	callCount := 0
+	snap := &fakeSnapshotRepo{
+		getFn: func(_ context.Context, _ string, _ domain.SnapshotType, _ string, _ int) (string, error) {
+			return targetXML, nil
+		},
+	}
+	// Override Snapshot to fail on the safety snapshot call
+	errOnFirstSnap := &errorOnNthSnapshotRepo{failOn: 1, delegate: snap}
+	repo := &fakeRepo{
+		jobConfigFn: func(_ context.Context, name string) (string, error) {
+			callCount++
+			return currentXML, nil
+		},
+	}
+	svc := newService(repo, errOnFirstSnap, 0)
+
+	err := svc.SnapshotRestore(context.Background(), "prod", domain.SnapshotJob, "my-job", 1)
+	if err == nil {
+		t.Fatal("expected error when safety snapshot fails, got nil")
+	}
+}
+
+// errorOnNthSnapshotRepo fails on the Nth call to Snapshot, delegates otherwise.
+type errorOnNthSnapshotRepo struct {
+	failOn   int
+	calls    int
+	delegate *fakeSnapshotRepo
+}
+
+func (r *errorOnNthSnapshotRepo) Snapshot(ctx context.Context, env string, objType domain.SnapshotType, objName, configXML string, op domain.SnapshotOperation) (int, error) {
+	r.calls++
+	if r.calls == r.failOn {
+		return 0, errors.New("safety snapshot failed")
+	}
+	return r.delegate.Snapshot(ctx, env, objType, objName, configXML, op)
+}
+func (r *errorOnNthSnapshotRepo) ListSnapshots(ctx context.Context, env string, objType domain.SnapshotType, objName string, limit, offset int) ([]domain.SnapshotInfo, error) {
+	return r.delegate.ListSnapshots(ctx, env, objType, objName, limit, offset)
+}
+func (r *errorOnNthSnapshotRepo) GetSnapshot(ctx context.Context, env string, objType domain.SnapshotType, objName string, version int) (string, error) {
+	return r.delegate.GetSnapshot(ctx, env, objType, objName, version)
+}
+func (r *errorOnNthSnapshotRepo) LatestSnapshot(ctx context.Context, env string, objType domain.SnapshotType, objName string) (*domain.SnapshotInfo, string, error) {
+	return r.delegate.LatestSnapshot(ctx, env, objType, objName)
+}
+func (r *errorOnNthSnapshotRepo) Prune(ctx context.Context, env string, objType domain.SnapshotType, objName string, keep int) (int, error) {
+	return r.delegate.Prune(ctx, env, objType, objName, keep)
+}
+func (r *errorOnNthSnapshotRepo) Count(ctx context.Context, env string, objType domain.SnapshotType, objName string) (int, error) {
+	return r.delegate.Count(ctx, env, objType, objName)
+}
+func (r *errorOnNthSnapshotRepo) Close() error { return nil }
