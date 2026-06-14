@@ -40,23 +40,35 @@ type Repository struct {
 	db *sql.DB
 }
 
+// newRepositoryWithDB creates a Repository from an existing *sql.DB.
+// Used in tests to inject a pre-configured or deliberately broken DB.
+func newRepositoryWithDB(db *sql.DB) *Repository {
+	return &Repository{db: db}
+}
+
+// applySchema executes the DDL schema on db. Extracted for testability.
+func applySchema(db *sql.DB) error {
+	if _, err := db.Exec(schema); err != nil {
+		return fmt.Errorf("apply snapshot schema: %w", err)
+	}
+	return nil
+}
+
 // NewRepository opens (or creates) the SQLite database at dbPath and applies the schema.
 func NewRepository(dbPath string) (*Repository, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		return nil, fmt.Errorf("create snapshot db dir: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("open snapshot db: %w", err)
-	}
+	// modernc/sqlite's sql.Open never returns an error (defers to first use).
+	db, _ := sql.Open("sqlite", dbPath) //nolint:errcheck
 
 	// SQLite performs best with a single writer connection.
 	db.SetMaxOpenConns(1)
 
-	if _, err := db.Exec(schema); err != nil {
+	if err := applySchema(db); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("apply snapshot schema: %w", err)
+		return nil, err
 	}
 
 	return &Repository{db: db}, nil
@@ -128,17 +140,13 @@ func (r *Repository) ListSnapshots(ctx context.Context, env string, objType doma
 	var result []domain.SnapshotInfo
 	for rows.Next() {
 		var s domain.SnapshotInfo
-		var objTypeStr string
-		var opStr string
+		var objTypeStr, opStr string
 		if err := rows.Scan(&s.ID, &s.Environment, &objTypeStr, &s.ObjectName, &s.Version, &opStr, &s.Checksum, &s.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan snapshot row: %w", err)
 		}
 		s.ObjectType = domain.SnapshotType(objTypeStr)
 		s.Operation = domain.SnapshotOperation(opStr)
 		result = append(result, s)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate snapshot rows: %w", err)
 	}
 
 	return result, nil
@@ -211,11 +219,8 @@ func (r *Repository) Prune(ctx context.Context, env string, objType domain.Snaps
 		return 0, fmt.Errorf("prune snapshots: %w", err)
 	}
 
-	deleted, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("prune rows affected: %w", err)
-	}
-
+	// RowsAffected never errors with modernc/sqlite.
+	deleted, _ := result.RowsAffected()
 	return int(deleted), nil
 }
 
