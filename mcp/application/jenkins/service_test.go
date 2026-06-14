@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jcastillo/gaz-mcp/mcp/application/jenkins"
 	domain "github.com/jcastillo/gaz-mcp/mcp/domain/jenkins"
@@ -804,5 +805,422 @@ func TestService_ScriptConsole(t *testing.T) {
 	}
 	if out != "Result: 42" {
 		t.Errorf("expected 'Result: 42', got %s", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — JobSetConfig error paths
+// ---------------------------------------------------------------------------
+
+func TestService_JobSetConfig_ErrorApplyingConfig(t *testing.T) {
+	const currentXML = "<project><old/></project>"
+	const newXML = "<project><new/></project>"
+
+	snap := &fakeSnapshotRepo{}
+	repo := &fakeRepo{
+		jobConfigFn: func(_ context.Context, name string) (string, error) {
+			return currentXML, nil
+		},
+		jobSetConfigFn: func(_ context.Context, name, configXML string) error {
+			return errors.New("jenkins unreachable")
+		},
+	}
+	svc := newService(repo, snap, 0)
+
+	ver, err := svc.JobSetConfig(context.Background(), "prod", "my-job", newXML)
+	if err == nil {
+		t.Fatal("expected error when applying config fails, got nil")
+	}
+	// Snapshot was taken before the failed apply — version should be non-zero
+	if ver == 0 {
+		t.Error("expected non-zero version (snapshot was taken before failed apply)")
+	}
+	if len(snap.snapshots) != 1 {
+		t.Errorf("expected 1 snapshot (taken before failed apply), got %d", len(snap.snapshots))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — JobDelete error paths
+// ---------------------------------------------------------------------------
+
+func TestService_JobDelete_ErrorGettingConfig(t *testing.T) {
+	snap := &fakeSnapshotRepo{}
+	repo := &fakeRepo{
+		jobConfigFn: func(_ context.Context, name string) (string, error) {
+			return "", errors.New("job not found")
+		},
+	}
+	svc := newService(repo, snap, 0)
+
+	_, err := svc.JobDelete(context.Background(), "prod", "missing-job")
+	if err == nil {
+		t.Fatal("expected error when config fetch fails, got nil")
+	}
+	if len(snap.snapshots) != 0 {
+		t.Errorf("expected no snapshots when config fetch fails, got %d", len(snap.snapshots))
+	}
+}
+
+func TestService_JobDelete_ErrorDeleting(t *testing.T) {
+	snap := &fakeSnapshotRepo{}
+	repo := &fakeRepo{
+		jobConfigFn: func(_ context.Context, name string) (string, error) {
+			return "<project/>", nil
+		},
+		jobDeleteFn: func(_ context.Context, name string) error {
+			return errors.New("delete failed")
+		},
+	}
+	svc := newService(repo, snap, 0)
+
+	ver, err := svc.JobDelete(context.Background(), "prod", "my-job")
+	if err == nil {
+		t.Fatal("expected error when delete fails, got nil")
+	}
+	// Snapshot was taken before the failed delete
+	if ver == 0 {
+		t.Error("expected non-zero version (snapshot was taken before failed delete)")
+	}
+	if len(snap.snapshots) != 1 {
+		t.Errorf("expected 1 snapshot (taken before failed delete), got %d", len(snap.snapshots))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — JobCopy error paths
+// ---------------------------------------------------------------------------
+
+func TestService_JobCopy_ErrorGettingSourceConfig(t *testing.T) {
+	snap := &fakeSnapshotRepo{}
+	repo := &fakeRepo{
+		jobConfigFn: func(_ context.Context, name string) (string, error) {
+			return "", errors.New("source not found")
+		},
+	}
+	svc := newService(repo, snap, 0)
+
+	_, err := svc.JobCopy(context.Background(), "prod", "src-job", "dst-job")
+	if err == nil {
+		t.Fatal("expected error when source config fetch fails, got nil")
+	}
+	if len(snap.snapshots) != 0 {
+		t.Errorf("expected no snapshots when source config fetch fails, got %d", len(snap.snapshots))
+	}
+}
+
+func TestService_JobCopy_ErrorCopying(t *testing.T) {
+	snap := &fakeSnapshotRepo{}
+	repo := &fakeRepo{
+		jobConfigFn: func(_ context.Context, name string) (string, error) {
+			return "<project/>", nil
+		},
+		jobCopyFn: func(_ context.Context, from, to string) error {
+			return errors.New("copy failed")
+		},
+	}
+	svc := newService(repo, snap, 0)
+
+	_, err := svc.JobCopy(context.Background(), "prod", "src-job", "dst-job")
+	if err == nil {
+		t.Fatal("expected error when copy fails, got nil")
+	}
+	// No snapshot should be taken when the copy itself fails
+	if len(snap.snapshots) != 0 {
+		t.Errorf("expected no snapshots when copy fails, got %d", len(snap.snapshots))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — SnapshotRestore error paths
+// ---------------------------------------------------------------------------
+
+func TestService_SnapshotRestore_ErrorApplyingConfig(t *testing.T) {
+	const targetXML = "<project><v1/></project>"
+	const currentXML = "<project><current/></project>"
+
+	snap := &fakeSnapshotRepo{
+		getFn: func(_ context.Context, _ string, _ domain.SnapshotType, _ string, _ int) (string, error) {
+			return targetXML, nil
+		},
+	}
+	repo := &fakeRepo{
+		jobConfigFn: func(_ context.Context, name string) (string, error) {
+			return currentXML, nil
+		},
+		jobSetConfigFn: func(_ context.Context, name, configXML string) error {
+			return errors.New("apply failed")
+		},
+	}
+	svc := newService(repo, snap, 0)
+
+	err := svc.SnapshotRestore(context.Background(), "prod", domain.SnapshotJob, "my-job", 1)
+	if err == nil {
+		t.Fatal("expected error when applying restored config fails, got nil")
+	}
+	// Safety snapshot should have been taken before the failed apply
+	if len(snap.snapshots) != 1 {
+		t.Errorf("expected 1 safety snapshot before failed apply, got %d", len(snap.snapshots))
+	}
+	if snap.snapshots[0].op != domain.OpRestoreSafety {
+		t.Errorf("expected OpRestoreSafety, got %s", snap.snapshots[0].op)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — SnapshotDiff error paths
+// ---------------------------------------------------------------------------
+
+func TestService_SnapshotDiff_ErrorOnVersionA(t *testing.T) {
+	snap := &fakeSnapshotRepo{
+		getFn: func(_ context.Context, _ string, _ domain.SnapshotType, _ string, version int) (string, error) {
+			if version == 1 {
+				return "", errors.New("version 1 not found")
+			}
+			return "<v2/>", nil
+		},
+	}
+	svc := newService(&fakeRepo{}, snap, 0)
+
+	_, _, err := svc.SnapshotDiff(context.Background(), "prod", domain.SnapshotJob, "my-job", 1, 2)
+	if err == nil {
+		t.Fatal("expected error when version A not found, got nil")
+	}
+}
+
+func TestService_SnapshotDiff_ErrorOnVersionB(t *testing.T) {
+	snap := &fakeSnapshotRepo{
+		getFn: func(_ context.Context, _ string, _ domain.SnapshotType, _ string, version int) (string, error) {
+			if version == 2 {
+				return "", errors.New("version 2 not found")
+			}
+			return "<v1/>", nil
+		},
+	}
+	svc := newService(&fakeRepo{}, snap, 0)
+
+	_, _, err := svc.SnapshotDiff(context.Background(), "prod", domain.SnapshotJob, "my-job", 1, 2)
+	if err == nil {
+		t.Fatal("expected error when version B not found, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — SnapshotList / SnapshotPrune / SnapshotCount pass-through
+// ---------------------------------------------------------------------------
+
+func TestService_SnapshotList_PassThrough(t *testing.T) {
+	expected := []domain.SnapshotInfo{
+		{Version: 2, Operation: domain.OpUpdated},
+		{Version: 1, Operation: domain.OpCreated},
+	}
+	snap := &fakeSnapshotRepo{
+		listFn: func(_ context.Context, _ string, _ domain.SnapshotType, _ string, limit, offset int) ([]domain.SnapshotInfo, error) {
+			return expected, nil
+		},
+	}
+	svc := newService(&fakeRepo{}, snap, 0)
+
+	list, err := svc.SnapshotList(context.Background(), "prod", domain.SnapshotJob, "my-job", 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(list) != 2 {
+		t.Errorf("expected 2 items, got %d", len(list))
+	}
+	if list[0].Version != 2 {
+		t.Errorf("expected first item version 2, got %d", list[0].Version)
+	}
+}
+
+func TestService_SnapshotPrune_PassThrough(t *testing.T) {
+	snap := &fakeSnapshotRepo{
+		pruneFn: func(_ context.Context, _ string, _ domain.SnapshotType, _ string, keep int) (int, error) {
+			return 3, nil // pretend 3 were deleted
+		},
+	}
+	svc := newService(&fakeRepo{}, snap, 0)
+
+	deleted, err := svc.SnapshotPrune(context.Background(), "prod", domain.SnapshotJob, "my-job", 5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if deleted != 3 {
+		t.Errorf("expected 3 deleted, got %d", deleted)
+	}
+}
+
+func TestService_SnapshotCount_PassThrough(t *testing.T) {
+	snap := &fakeSnapshotRepo{
+		countFn: func(_ context.Context, _ string, _ domain.SnapshotType, _ string) (int, error) {
+			return 7, nil
+		},
+	}
+	svc := newService(&fakeRepo{}, snap, 0)
+
+	count, err := svc.SnapshotCount(context.Background(), "prod", domain.SnapshotJob, "my-job")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 7 {
+		t.Errorf("expected 7, got %d", count)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — NodeCreate / ViewCreate / CredentialCreate with snapshot
+// ---------------------------------------------------------------------------
+
+func TestService_NodeCreate_SnapshotsAfterCreate(t *testing.T) {
+	const xml = "<slave/>"
+	snap := &fakeSnapshotRepo{}
+	svc := newService(&fakeRepo{}, snap, 0)
+
+	ver, err := svc.NodeCreate(context.Background(), "prod", "agent-01", xml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ver != 1 {
+		t.Errorf("expected version 1, got %d", ver)
+	}
+	if len(snap.snapshots) != 1 {
+		t.Fatalf("expected 1 snapshot, got %d", len(snap.snapshots))
+	}
+	s := snap.snapshots[0]
+	if s.objType != domain.SnapshotNode {
+		t.Errorf("expected SnapshotNode, got %s", s.objType)
+	}
+	if s.op != domain.OpCreated {
+		t.Errorf("expected OpCreated, got %s", s.op)
+	}
+}
+
+func TestService_ViewCreate_SnapshotsAfterCreate(t *testing.T) {
+	const xml = "<listView/>"
+	snap := &fakeSnapshotRepo{}
+	svc := newService(&fakeRepo{}, snap, 0)
+
+	ver, err := svc.ViewCreate(context.Background(), "prod", "my-view", xml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ver != 1 {
+		t.Errorf("expected version 1, got %d", ver)
+	}
+	if len(snap.snapshots) != 1 {
+		t.Fatalf("expected 1 snapshot, got %d", len(snap.snapshots))
+	}
+	s := snap.snapshots[0]
+	if s.objType != domain.SnapshotView {
+		t.Errorf("expected SnapshotView, got %s", s.objType)
+	}
+	if s.op != domain.OpCreated {
+		t.Errorf("expected OpCreated, got %s", s.op)
+	}
+}
+
+func TestService_CredentialCreate_SnapshotsAfterCreate(t *testing.T) {
+	const xml = "<com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl/>"
+	snap := &fakeSnapshotRepo{}
+	svc := newService(&fakeRepo{}, snap, 0)
+
+	ver, err := svc.CredentialCreate(context.Background(), "prod", "system", "_", "my-cred", xml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ver != 1 {
+		t.Errorf("expected version 1, got %d", ver)
+	}
+	if len(snap.snapshots) != 1 {
+		t.Fatalf("expected 1 snapshot, got %d", len(snap.snapshots))
+	}
+	s := snap.snapshots[0]
+	if s.objType != domain.SnapshotCredential {
+		t.Errorf("expected SnapshotCredential, got %s", s.objType)
+	}
+	if s.objName != "my-cred" {
+		t.Errorf("expected objName 'my-cred', got %s", s.objName)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — snapshotXML with maxVersions triggers auto-prune
+// ---------------------------------------------------------------------------
+
+func TestService_SnapshotXML_AutoPruneWhenMaxVersionsSet(t *testing.T) {
+	pruneCalled := false
+	snap := &fakeSnapshotRepo{
+		pruneFn: func(_ context.Context, _ string, _ domain.SnapshotType, _ string, keep int) (int, error) {
+			pruneCalled = true
+			if keep != 3 {
+				return 0, errors.New("unexpected keep value")
+			}
+			return 1, nil
+		},
+	}
+	svc := newService(&fakeRepo{}, snap, 3) // maxVersions=3
+
+	_, err := svc.JobCreate(context.Background(), "prod", "my-job", "<project/>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Give the goroutine time to run — prune is fire-and-forget in a goroutine.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if pruneCalled {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !pruneCalled {
+		t.Error("expected auto-prune to be called when maxVersions > 0")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — NoopSnapshotRepository — remaining methods
+// ---------------------------------------------------------------------------
+
+func TestNoopSnapshotRepository_Prune_ReturnsZero(t *testing.T) {
+	noop := &jenkins.NoopSnapshotRepository{}
+	deleted, err := noop.Prune(context.Background(), "prod", domain.SnapshotJob, "job", 5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("expected 0 deleted, got %d", deleted)
+	}
+}
+
+func TestNoopSnapshotRepository_Count_ReturnsZero(t *testing.T) {
+	noop := &jenkins.NoopSnapshotRepository{}
+	count, err := noop.Count(context.Background(), "prod", domain.SnapshotJob, "job")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0, got %d", count)
+	}
+}
+
+func TestNoopSnapshotRepository_LatestSnapshot_ReturnsError(t *testing.T) {
+	noop := &jenkins.NoopSnapshotRepository{}
+	info, xml, err := noop.LatestSnapshot(context.Background(), "prod", domain.SnapshotJob, "job")
+	if err == nil {
+		t.Fatal("expected error from noop LatestSnapshot, got nil")
+	}
+	if info != nil {
+		t.Errorf("expected nil info, got %+v", info)
+	}
+	if xml != "" {
+		t.Errorf("expected empty xml, got %s", xml)
+	}
+}
+
+func TestNoopSnapshotRepository_Close_ReturnsNil(t *testing.T) {
+	noop := &jenkins.NoopSnapshotRepository{}
+	if err := noop.Close(); err != nil {
+		t.Errorf("expected nil from Close, got %v", err)
 	}
 }
