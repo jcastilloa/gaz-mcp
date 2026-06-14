@@ -426,16 +426,32 @@ func (r *Repository) BuildArtifacts(ctx context.Context, jobName string, buildNu
 
 // --- Nodes ---
 
+// nodeListRaw is the shape returned by Jenkins /computer/api/json?tree=...
+type nodeListRaw struct {
+	Computers []nodeRaw `json:"computer"`
+}
+
+type nodeRaw struct {
+	DisplayName string `json:"displayName"`
+	Offline     bool   `json:"offline"`
+	Idle        bool   `json:"idle"`
+}
+
 func (r *Repository) NodeList(ctx context.Context) ([]domain.NodeInfo, error) {
-	nodes, err := r.client.GetAllNodes(ctx)
-	if err != nil {
+	const tree = "computer[displayName,offline,idle]"
+	var raw nodeListRaw
+	if _, err := r.client.Requester.GetJSON(ctx, "/computer/api/json", &raw, map[string]string{"tree": tree}); err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
 	}
 
-	result := make([]domain.NodeInfo, 0, len(nodes))
-	for _, n := range nodes {
-		n.Poll(ctx) //nolint:errcheck
-		result = append(result, nodeToInfo(ctx, n))
+	result := make([]domain.NodeInfo, 0, len(raw.Computers))
+	for _, n := range raw.Computers {
+		result = append(result, domain.NodeInfo{
+			Name:        n.DisplayName,
+			DisplayName: n.DisplayName,
+			Online:      !n.Offline,
+			Idle:        n.Idle,
+		})
 	}
 
 	return result, nil
@@ -502,16 +518,36 @@ func (r *Repository) NodeDisconnect(ctx context.Context, name string, _ string) 
 
 // --- Views ---
 
+// viewListRaw is the shape returned by Jenkins /api/json?tree=views[...]
+type viewListRaw struct {
+	Views []viewRaw `json:"views"`
+}
+
+type viewRaw struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+	Jobs []struct {
+		Name string `json:"name"`
+	} `json:"jobs"`
+}
+
 func (r *Repository) ViewList(ctx context.Context) ([]domain.ViewInfo, error) {
-	views, err := r.client.GetAllViews(ctx)
-	if err != nil {
+	const tree = "views[name,url,jobs[name]]"
+	var raw viewListRaw
+	if _, err := r.client.Requester.GetJSON(ctx, "/api/json", &raw, map[string]string{"tree": tree}); err != nil {
 		return nil, fmt.Errorf("list views: %w", err)
 	}
 
-	result := make([]domain.ViewInfo, 0, len(views))
-	for _, v := range views {
-		v.Poll(ctx) //nolint:errcheck
-		result = append(result, viewToInfo(v))
+	result := make([]domain.ViewInfo, 0, len(raw.Views))
+	for _, v := range raw.Views {
+		info := domain.ViewInfo{
+			Name: v.Name,
+			URL:  v.URL,
+		}
+		for _, j := range v.Jobs {
+			info.Jobs = append(info.Jobs, j.Name)
+		}
+		result = append(result, info)
 	}
 
 	return result, nil
