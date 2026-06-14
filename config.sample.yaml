@@ -1,6 +1,6 @@
 service:
   transport: stdio
-  version: 0.2.1
+  version: 0.3.0
 
 environments:
   development:
@@ -9,6 +9,26 @@ environments:
     port: 3306
     user: root
     password: changeme
+
+jenkins:
+  production:
+    url: https://jenkins.example.com
+    user: admin
+    api_key: "${JENKINS_PROD_API_KEY}"
+    timeout: 30s
+    insecure: false
+  staging:
+    url: https://jenkins-staging.example.com
+    user: admin
+    api_key: "${JENKINS_STAGING_API_KEY}"
+    timeout: 30s
+    insecure: true
+
+snapshot:
+  enabled: true
+  db_path: ~/.config/gaz-mcp/jenkins_history.db
+  max_versions: 50
+  auto_prune: true
 
 openai:
   provider_name: openai

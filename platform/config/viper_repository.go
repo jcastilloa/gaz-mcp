@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	aiDomain "github.com/jcastillo/gaz-mcp/shared/ai/domain"
 	configDomain "github.com/jcastillo/gaz-mcp/shared/config/domain"
@@ -94,6 +95,38 @@ func (r *ViperRepository) ServiceConfig() configDomain.ServiceConfig {
 	}
 }
 
+func (r *ViperRepository) JenkinsEnvironments() map[string]configDomain.JenkinsEnvironmentConfig {
+	raw := r.v.GetStringMap("jenkins")
+	envs := make(map[string]configDomain.JenkinsEnvironmentConfig, len(raw))
+	for name, val := range raw {
+		m, ok := val.(map[string]any)
+		if !ok {
+			continue
+		}
+		cfg := configDomain.JenkinsEnvironmentConfig{
+			URL:      stringVal(m, "url"),
+			User:     stringVal(m, "user"),
+			APIKey:   stringVal(m, "api_key"),
+			Timeout:  durationVal(m, "timeout", 30*time.Second),
+			Insecure: boolVal(m, "insecure"),
+		}
+		envs[name] = cfg
+	}
+	return envs
+}
+
+func (r *ViperRepository) SnapshotConfig() configDomain.SnapshotConfig {
+	home, _ := os.UserHomeDir()
+	defaultDBPath := filepath.Join(home, ".config", "gaz-mcp", "jenkins_history.db")
+
+	return configDomain.SnapshotConfig{
+		Enabled:     r.v.GetBool("snapshot.enabled"),
+		DBPath:      stringOrDefault(r.v.GetString("snapshot.db_path"), defaultDBPath),
+		MaxVersions: intOrDefault(r.v.GetInt("snapshot.max_versions"), 50),
+		AutoPrune:   r.v.GetBool("snapshot.auto_prune"),
+	}
+}
+
 func stringVal(m map[string]any, key string) string {
 	if v, ok := m[key]; ok {
 		if s, ok := v.(string); ok {
@@ -115,4 +148,44 @@ func intVal(m map[string]any, key string) int {
 		}
 	}
 	return 0
+}
+
+func boolVal(m map[string]any, key string) bool {
+	if v, ok := m[key]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return false
+}
+
+func durationVal(m map[string]any, key string, defaultVal time.Duration) time.Duration {
+	if v, ok := m[key]; ok {
+		switch d := v.(type) {
+		case string:
+			parsed, err := time.ParseDuration(d)
+			if err == nil {
+				return parsed
+			}
+		case int:
+			return time.Duration(d) * time.Second
+		case float64:
+			return time.Duration(d) * time.Second
+		}
+	}
+	return defaultVal
+}
+
+func stringOrDefault(val, defaultVal string) string {
+	if val == "" {
+		return defaultVal
+	}
+	return val
+}
+
+func intOrDefault(val, defaultVal int) int {
+	if val <= 0 {
+		return defaultVal
+	}
+	return val
 }

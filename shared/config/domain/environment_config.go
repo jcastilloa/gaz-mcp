@@ -1,6 +1,9 @@
 package domain
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 type EnvironmentConfig struct {
 	Engine   string
@@ -39,4 +42,29 @@ func (c EnvironmentConfig) PostgresDSN(database string) string {
 		host = "127.0.0.1"
 	}
 	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable", c.User, c.Password, host, port, database)
+}
+
+// JenkinsEnvironmentConfig holds connection details for a Jenkins instance.
+type JenkinsEnvironmentConfig struct {
+	URL      string        // Jenkins base URL, e.g. https://jenkins.example.com
+	User     string        // Jenkins username for API auth
+	APIKey   string        // API key or password — hidden in logs and JSON output
+	Timeout  time.Duration // HTTP client timeout
+	Insecure bool          // Allow self-signed TLS certificates
+}
+
+// MarshalJSON masks the APIKey for safe logging.
+func (c JenkinsEnvironmentConfig) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf(
+		`{"url":%q,"user":%q,"api_key":"****","timeout":%q,"insecure":%v}`,
+		c.URL, c.User, c.Timeout.String(), c.Insecure,
+	)), nil
+}
+
+// SnapshotConfig holds settings for the automatic backup/versioning system.
+type SnapshotConfig struct {
+	Enabled     bool   // Enable snapshot capture on writes
+	DBPath      string // SQLite database file path
+	MaxVersions int    // Max versions to keep per object (0 = unlimited)
+	AutoPrune   bool   // Automatically prune old versions after each write
 }

@@ -6,4 +6,6 @@ type Repository interface {
 	Environments() map[string]EnvironmentConfig
 	OpenAIProviderConfig() aiDomain.ProviderConfig
 	ServiceConfig() ServiceConfig
+	JenkinsEnvironments() map[string]JenkinsEnvironmentConfig
+	SnapshotConfig() SnapshotConfig
 }
