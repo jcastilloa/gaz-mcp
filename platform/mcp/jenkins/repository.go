@@ -82,20 +82,29 @@ func (r *Repository) rawGet(ctx context.Context, path string) (string, error) {
 
 // --- System ---
 
+// infoRaw is the shape returned by Jenkins /api/json?tree=...
+type infoRaw struct {
+	QuietingDown bool `json:"quietingDown"`
+	Jobs         []struct {
+		Name string `json:"name"`
+	} `json:"jobs"`
+	Computers []struct {
+		DisplayName string `json:"displayName"`
+	} `json:"computers"`
+}
+
 func (r *Repository) Info(ctx context.Context) (*domain.JenkinsInfo, error) {
-	resp, err := r.client.Info(ctx)
-	if err != nil {
+	const tree = "quietingDown,jobs[name],computers[displayName]"
+	var raw infoRaw
+	if _, err := r.client.Requester.GetJSON(ctx, "/api/json", &raw, map[string]string{"tree": tree}); err != nil {
 		return nil, fmt.Errorf("jenkins info: %w", err)
 	}
 
-	jobs, _ := r.client.GetAllJobs(ctx)
-	nodes, _ := r.client.GetAllNodes(ctx)
-
 	return &domain.JenkinsInfo{
 		Version:      r.client.Version,
-		JobCount:     len(jobs),
-		NodeCount:    len(nodes),
-		QuietingDown: resp.QuietingDown,
+		JobCount:     len(raw.Jobs),
+		NodeCount:    len(raw.Computers),
+		QuietingDown: raw.QuietingDown,
 	}, nil
 }
 
