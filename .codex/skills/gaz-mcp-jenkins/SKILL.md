@@ -11,6 +11,50 @@ metadata:
 
 You have access to the `gaz-mcp` Jenkins proxy — an MCP bridge to one or more Jenkins instances.
 
+## Prerequisite check — do this once before using distill_mcp_output
+
+Before calling `distill_mcp_output` for the first time in a session, confirm that
+`context-distill` is installed and has the right subcommand. Run these two commands
+(they are fast and cheap — no LLM call):
+
+```bash
+# 1. Confirm the binary exists and is reachable
+which context-distill
+
+# 2. Confirm distill_mcp_output subcommand and its exact flags
+context-distill distill_mcp_output --help
+```
+
+Expected output of step 2:
+
+```
+Distill raw MCP tool output for one question
+
+Usage:
+  context-distill distill_mcp_output [flags]
+
+Flags:
+      --output string            Raw MCP tool output payload to distill
+      --question string          Exact question to answer from the MCP output
+      --server-arg stringArray   Optional MCP server argument (repeat flag for multiple values)
+      --server-command string    Optional MCP server command to invoke when output is omitted
+      --tool-arguments string    Optional JSON object passed to the target MCP tool
+      --tool-name string         Optional MCP tool name for extra context
+```
+
+If `context-distill` is not found, install it:
+
+```bash
+# From the context-distill repo
+make install
+# or
+go install github.com/jcastilloa/context-distill/cmd/server@latest
+```
+
+> **Skip this check** if you already ran it earlier in the same session and it passed.
+
+---
+
 ## Available environments
 
 Check the tool description of any `jenkins_*` tool to see which environments are configured. Always use the exact environment name from that list.
