@@ -3,12 +3,57 @@ name: gaz-mcp-jenkins
 description: Jenkins MCP proxy for gaz-mcp. Use to inspect jobs, builds, nodes,
   credentials, views, queue, plugins, and to trigger or modify Jenkins resources.
   Includes automatic config versioning (snapshots) before every write operation.
-  Integrates with context-distill to distil large responses such as build logs.
+  For large responses (build logs, script output, config XML) always use
+  distill_mcp_output from context-distill instead of reading the raw payload.
 metadata:
   model: opus
 ---
 
 You have access to the `gaz-mcp` Jenkins proxy — an MCP bridge to one or more Jenkins instances.
+
+## Prerequisite check — do this once before using distill_mcp_output
+
+Before calling `distill_mcp_output` for the first time in a session, confirm that
+`context-distill` is installed and has the right subcommand. Run these two commands
+(they are fast and cheap — no LLM call):
+
+```bash
+# 1. Confirm the binary exists and is reachable
+which context-distill
+
+# 2. Confirm distill_mcp_output subcommand and its exact flags
+context-distill distill_mcp_output --help
+```
+
+Expected output of step 2:
+
+```
+Distill raw MCP tool output for one question
+
+Usage:
+  context-distill distill_mcp_output [flags]
+
+Flags:
+      --output string            Raw MCP tool output payload to distill
+      --question string          Exact question to answer from the MCP output
+      --server-arg stringArray   Optional MCP server argument (repeat flag for multiple values)
+      --server-command string    Optional MCP server command to invoke when output is omitted
+      --tool-arguments string    Optional JSON object passed to the target MCP tool
+      --tool-name string         Optional MCP tool name for extra context
+```
+
+If `context-distill` is not found, install it:
+
+```bash
+# From the context-distill repo
+make install
+# or
+go install github.com/jcastilloa/context-distill/cmd/server@latest
+```
+
+> **Skip this check** if you already ran it earlier in the same session and it passed.
+
+---
 
 ## Available environments
 
@@ -72,17 +117,26 @@ Check the tool description of any `jenkins_*` tool to see which environments are
 
 ---
 
-## Integrating with context-distill for large responses
+## Handling large responses with context-distill
 
-Some Jenkins tools return large payloads — especially `jenkins_build_log`, `jenkins_job_config`, and `jenkins_script_console`. **Always distil these responses** with `context-distill` before reasoning over them.
+Some Jenkins tools return large payloads — especially `jenkins_build_log`,
+`jenkins_job_config`, and `jenkins_script_console`. **Never pass these raw to the LLM.**
+Use `distill_mcp_output` from context-distill instead.
 
-Use the CLI: `context-distill distill_batch`. Binary location: `~/.local/bin/context-distill` (installed via `make install`).
+### The correct flow
+
+```
+agent → distill_mcp_output (context-distill) → jenkins_* (gaz-mcp) → compact answer
+```
+
+Context-distill calls gaz-mcp as an MCP client, gets the raw payload, and returns
+only the distilled answer. The LLM never sees the raw log.
 
 ### When to distil
 
-| Tool | Typical output size | Distil? |
-|------|--------------------|---------|
-| `jenkins_build_log` | Hundreds to thousands of lines | **Always** |
+| Tool | Typical output size | Action |
+|------|--------------------|--------|
+| `jenkins_build_log` | Hundreds to thousands of lines | **Always use distill_mcp_output** |
 | `jenkins_script_console` | Variable — can be very large | **When > 8 lines** |
 | `jenkins_job_config` | XML — can be large | **When > 8 lines** |
 | `jenkins_job_list` | Many jobs | **When > 8 lines** |
@@ -91,38 +145,55 @@ Use the CLI: `context-distill distill_batch`. Binary location: `~/.local/bin/con
 
 ### Find errors in a build log
 
-```bash
-# Step 1 — get the log via MCP tool, capture output
-# Step 2 — pipe through context-distill
-echo "<log content>" | context-distill distill_batch \
-  --question "Return only error and exception lines as JSON array [{line_number, message}]."
+```
+distill_mcp_output(
+  server_command = "gaz-mcp",
+  server_args    = ["--transport", "stdio"],
+  tool_name      = "jenkins_build_log",
+  tool_arguments = {
+    "environment":  "production",
+    "job":          "My Pipeline",
+    "build_number": 42,
+    "start_line":   0
+  },
+  question = "Return only error and exception lines as JSON array [{line_number, message}]."
+)
 ```
 
-### Check if a build passed
+### Check if a build passed or failed
 
-```bash
-echo "<log content>" | context-distill distill_batch \
-  --question "Did the build pass? Return only PASS or FAIL. If FAIL, list the first 5 error lines."
 ```
-
-### Compare two job configs
-
-```bash
-# Get diff via jenkins_snapshot_diff, then distil
-echo "<diff XML content>" | context-distill distill_batch \
-  --question "What changed between the two XML configs? Return a bullet list of meaningful differences."
+distill_mcp_output(
+  server_command = "gaz-mcp",
+  server_args    = ["--transport", "stdio"],
+  tool_name      = "jenkins_build_log",
+  tool_arguments = {
+    "environment":  "production",
+    "job":          "My Pipeline",
+    "build_number": 42
+  },
+  question = "Did the build pass? Return JSON: {result, total_tests, failing_tests, root_cause, affected_specs}"
+)
 ```
 
 ### Summarise Groovy script output
 
-```bash
-echo "<script output>" | context-distill distill_batch \
-  --question "Return only the list of job names, one per line."
+```
+distill_mcp_output(
+  server_command = "gaz-mcp",
+  server_args    = ["--transport", "stdio"],
+  tool_name      = "jenkins_script_console",
+  tool_arguments = {
+    "environment": "production",
+    "script":      "Jenkins.instance.getAllItems().collect { it.fullName }.join('\\n')"
+  },
+  question = "Return only job names that contain 'deploy', one per line."
+)
 ```
 
 ### Output contract rules (mandatory)
 
-1. **Every call MUST include an explicit output contract in `--question`.**
+1. **Every `distill_mcp_output` call MUST include an explicit output contract in `question`.**
    - Good: `"Return only error lines as JSON array [{line_number, message}]."`
    - Bad: `"What happened?"`
 2. **One task per call.** Do not mix unrelated questions.
@@ -135,12 +206,16 @@ echo "<script output>" | context-distill distill_batch \
 ### Investigate a failing build
 
 ```
-# 1. Get build metadata
-jenkins_build_info(environment="production", job_name="deploy-api", build_number=99)
+# 1. Get build metadata (short — read directly)
+jenkins_build_info(environment="production", job="deploy-api", build_number=99)
 
-# 2. Get full log and distil for errors
-log = jenkins_build_log(environment="production", job_name="deploy-api", build_number=99)
-distill_batch(input=log, question="Return only error and exception lines as JSON [{line_number, message}].")
+# 2. Get full log and distil for errors (large — always distil)
+distill_mcp_output(
+  server_command="gaz-mcp", server_args=["--transport","stdio"],
+  tool_name="jenkins_build_log",
+  tool_arguments={"environment":"production","job":"deploy-api","build_number":99},
+  question="Return only error and exception lines as JSON [{line_number, message}]."
+)
 ```
 
 ### Safe config update (with rollback capability)
@@ -160,9 +235,16 @@ jenkins_snapshot_restore(environment="production", object_type="job", object_nam
 ### Explore all jobs
 
 ```
-jobs = jenkins_job_list(environment="production")
-# If list is long, distil:
-distill_batch(input=jobs, question="Return only job names that contain 'deploy', one per line.")
+# If list is short — read directly
+jenkins_job_list(environment="production")
+
+# If list is long — distil
+distill_mcp_output(
+  server_command="gaz-mcp", server_args=["--transport","stdio"],
+  tool_name="jenkins_job_list",
+  tool_arguments={"environment":"production"},
+  question="Return only job names that contain 'deploy', one per line."
+)
 ```
 
 ---
