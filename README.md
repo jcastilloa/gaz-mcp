@@ -1,3 +1,5 @@
+![gaz-mcp — AMySQL, PostgreSQL and Jenkins proxy exposed as an MCP server](assets/header.png)
+
 # gaz-mcp
 
 MySQL, PostgreSQL and Jenkins proxy exposed as an MCP server. Lets AI coding agents explore schemas, run `SELECT` queries safely, and interact with Jenkins CI/CD pipelines — with automatic config versioning before every write.
