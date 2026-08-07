@@ -7,7 +7,7 @@ import (
 
 func BuildDiagnosis(runtime RuntimeStats, goroutines GoroutineReport, pools []DBPoolStats) DiagnosisReport {
 	report := DiagnosisReport{Runtime: runtime, Goroutines: goroutines, DBPools: pools}
-	if hasDBPoolWaiters(goroutines) {
+	if hasDBPoolWaiters(goroutines) && shouldReportPoolExhaustion(pools) {
 		report.Conclusions = append(report.Conclusions, poolConclusion(goroutines, pools))
 	}
 	return report
@@ -40,6 +40,18 @@ func poolConclusion(goroutines GoroutineReport, pools []DBPoolStats) Conclusion 
 		Evidence: fmt.Sprintf("%d goroutines wait in database/sql, but DB pool metrics are unavailable or do not show saturation.", waiting),
 		Hint:     "Expose database/sql DBStats in /debug/vars to confirm saturation.",
 	}
+}
+
+func shouldReportPoolExhaustion(pools []DBPoolStats) bool {
+	if len(pools) == 0 {
+		return true
+	}
+	for _, pool := range pools {
+		if pool.WaitCount > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func dbPoolWaiterCount(report GoroutineReport) int {

@@ -16,7 +16,7 @@ var signatures = []signature{
 		description: "Goroutines are waiting for a database/sql connection.",
 		hint:        "Check SetMaxOpenConns, unclosed rows, uncommitted transactions, and slow queries.",
 		matches: func(group GoroutineGroup) bool {
-			return containsStack(group, "database/sql.(*DB).conn") && isWaitingState(group.State)
+			return containsStack(group, "database/sql.(*DB).conn(") && isWaitingState(group.State)
 		},
 	},
 	{

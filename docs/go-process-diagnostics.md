@@ -265,7 +265,7 @@ get_db_pool_stats(target="http://orders.internal:6060")
 diagnose(target="http://orders.internal:6060")
 ```
 
-Without the optional pool instrumentation, a `database/sql` waiter remains useful evidence but the final conclusion is only `suspected`. With matching saturated pool metrics, it is `confirmed`.
+Without the optional pool instrumentation, a `database/sql` waiter remains useful evidence but the final conclusion is only `suspected`. With matching saturated pool metrics, it is `confirmed`. When exposed pools all have `wait_count: 0`, `diagnose` treats that as contradictory evidence and emits no pool-exhaustion conclusion.
 
 ## Findings and diagnosis limits
 
@@ -273,7 +273,7 @@ Without the optional pool instrumentation, a `database/sql` waiter remains usefu
 
 | Finding | Conditions | Meaning |
 |---|---|---|
-| `DB_POOL_EXHAUSTED` | Stack contains `database/sql.(*DB).conn` and state is `semacquire`, `chan receive`, or `select` | Goroutines wait for a `database/sql` connection. |
+| `DB_POOL_EXHAUSTED` | Stack contains `database/sql.(*DB).conn(` and state is `semacquire`, `chan receive`, or `select` | Goroutines wait for a `database/sql` connection. The normal `connectionOpener` worker does not match. |
 | `HTTP_INFLIGHT_FASTHTTP` | Stack contains `fasthttp.(*Server).serveConn` | In-flight `fasthttp` requests share the stack. |
 | `HTTP_INFLIGHT_NET_HTTP` | Stack contains `net/http.(*conn).serve` | In-flight standard-library HTTP requests share the stack. |
 | `LOCK_CONTENTION` | More than one goroutine and a mutex-lock stack frame | Several goroutines contend on a mutex. |
@@ -286,13 +286,13 @@ Without the optional pool instrumentation, a `database/sql` waiter remains usefu
 - `idle == 0`
 - `wait_count > 0`
 
-Otherwise it reports a **suspected** pool exhaustion and recommends publishing `DBStats`. The other signature labels are evidence to investigate, not automatic root-cause conclusions.
+When pool metrics are unavailable it reports a **suspected** pool exhaustion and recommends publishing `DBStats`. When at least one exposed pool has waits but none is currently saturated, it also remains **suspected**. When exposed pools all have `wait_count: 0`, it emits no pool-exhaustion conclusion. The other signature labels are evidence to investigate, not automatic root-cause conclusions.
 
 `get_runtime_stats` reads `HeapAlloc`, `HeapSys`, `NumGC`, `PauseTotalNs`, and `LastGC` from standard `memstats`. It includes `goroutine_source` when `num_goroutine` is published. During `diagnose`, an absent `num_goroutine` is filled from the goroutine dump and marked as `goroutine_dump`; `get_runtime_stats` alone leaves it at zero. Missing optional `num_threads` appears as zero; use `get_expvars` when a distinction between zero and an unpublished variable matters.
 
 ## Operational notes
 
-- Profile and endpoint responses are capped at 128 MiB. Very large profiles or expvar responses are rejected rather than kept in memory unboundedly.
+- Profile and endpoint responses are capped at 256 MiB. Very large profiles or expvar responses are rejected rather than kept in memory unboundedly.
 - `generate_flamegraph` renders an SVG flame graph locally from the captured profile; it does not require Graphviz or the target binary.
 - CPU profiles are an active capture on the target for their chosen duration; prefer a short, representative interval and avoid indiscriminate repeated captures on a busy production process.
 - `get_expvars` returns the full endpoint payload. Treat it as potentially sensitive and avoid forwarding large raw outputs where a focused analysis is enough.

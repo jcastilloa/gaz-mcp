@@ -105,6 +105,53 @@ func TestDiagnoseDoesNotConfirmPoolExhaustionWithoutPoolMetrics(t *testing.T) {
 	}
 }
 
+func TestDiagnoseDoesNotSuspectPoolExhaustionWhenExposedPoolsHaveNoWaits(t *testing.T) {
+	goroutines, err := AnalyzeGoroutines(blockedRequests)
+	if err != nil {
+		t.Fatalf("analyze goroutines: %v", err)
+	}
+
+	report := BuildDiagnosis(RuntimeStats{}, goroutines, []DBPoolStats{
+		{Name: "database", MaxOpenConnections: 50},
+		{Name: "database_comments", MaxOpenConnections: 50},
+	})
+	if len(report.Conclusions) != 0 {
+		t.Fatalf("conclusions = %#v, want no conclusion when exposed pools have no waits", report.Conclusions)
+	}
+}
+
+func TestDiagnoseSuspectsPoolExhaustionWhenExposedPoolsHaveWaitsWithoutSaturation(t *testing.T) {
+	goroutines, err := AnalyzeGoroutines(blockedRequests)
+	if err != nil {
+		t.Fatalf("analyze goroutines: %v", err)
+	}
+
+	report := BuildDiagnosis(RuntimeStats{}, goroutines, []DBPoolStats{{
+		Name:               "database",
+		OpenConnections:    4,
+		InUse:              2,
+		Idle:               2,
+		MaxOpenConnections: 50,
+		WaitCount:          1,
+	}})
+	if len(report.Conclusions) != 1 || report.Conclusions[0].Confidence != ConfidenceSuspected {
+		t.Fatalf("conclusions = %#v, want one suspected conclusion", report.Conclusions)
+	}
+}
+
+func TestAnalyzeGoroutinesDoesNotTreatConnectionOpenerAsPoolWaiter(t *testing.T) {
+	report, err := AnalyzeGoroutines(`goroutine 31 [select]:
+database/sql.(*DB).connectionOpener(0xc0001d2300, {0x123, 0x456})
+	/usr/local/go/src/database/sql/sql.go:1253 +0x87
+`)
+	if err != nil {
+		t.Fatalf("analyze goroutines: %v", err)
+	}
+	if hasFinding(report.Groups[0].Findings, FindingDBPoolExhausted) {
+		t.Fatalf("findings = %#v, connectionOpener is a normal database/sql worker", report.Groups[0].Findings)
+	}
+}
+
 func hasFinding(findings []Finding, code string) bool {
 	for _, finding := range findings {
 		if finding.Code == code {
