@@ -1,13 +1,17 @@
 package diagnostics
 
 import (
+	"bytes"
 	"encoding/json"
+	"sort"
 	"time"
 )
 
 func parseExpvars(data []byte) (map[string]any, error) {
 	vars := make(map[string]any)
-	if err := json.Unmarshal(data, &vars); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&vars); err != nil {
 		return nil, err
 	}
 	return vars, nil
@@ -15,7 +19,10 @@ func parseExpvars(data []byte) (map[string]any, error) {
 
 func runtimeStatsFromExpvars(vars map[string]any) RuntimeStats {
 	stats := RuntimeStats{Available: true, Instrumentation: "expvar"}
-	stats.Goroutines = int(number(vars["num_goroutine"]))
+	if value, ok := vars["num_goroutine"]; ok {
+		stats.Goroutines = int(number(value))
+		stats.GoroutineSource = "expvar:num_goroutine"
+	}
 	stats.Threads = int(number(vars["num_threads"]))
 	memstats, ok := object(vars["memstats"])
 	if !ok {
@@ -52,6 +59,7 @@ func dbPoolStatsFromExpvars(vars map[string]any) []DBPoolStats {
 			MaxIdleClosed: int64(number(pool["max_idle_closed"])), MaxIdleTimeClosed: int64(number(pool["max_idle_time_closed"])), MaxLifetimeClosed: int64(number(pool["max_lifetime_closed"])),
 		})
 	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	return result
 }
 
@@ -60,10 +68,19 @@ func object(value any) (map[string]any, bool) {
 	return object, ok
 }
 
-func number(value any) float64 {
-	number, ok := value.(float64)
-	if !ok {
-		return 0
+func number(value any) int64 {
+	switch value := value.(type) {
+	case json.Number:
+		number, err := value.Int64()
+		if err == nil {
+			return number
+		}
+	case float64:
+		return int64(value)
+	case int64:
+		return value
+	case int:
+		return int64(value)
 	}
-	return number
+	return 0
 }

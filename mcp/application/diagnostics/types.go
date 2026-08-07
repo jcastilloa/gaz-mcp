@@ -39,6 +39,7 @@ type Finding struct {
 
 type RuntimeStats struct {
 	Available       bool          `json:"available"`
+	GoroutineSource string        `json:"goroutine_source,omitempty"`
 	Goroutines      int           `json:"goroutines,omitempty"`
 	Threads         int           `json:"threads,omitempty"`
 	HeapAlloc       uint64        `json:"heap_alloc_bytes,omitempty"`

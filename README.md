@@ -32,7 +32,6 @@ It uses stdio transport: one binary, no daemon, and no listener opened by the MC
 
 - The Go version declared in [`go.mod`](go.mod) (currently Go **1.26.0**) to build from source, or a prebuilt binary.
 - A MySQL/PostgreSQL server and/or Jenkins instance reachable from the host running the MCP.
-- For a rendered Go profile graph, Graphviz `dot` must be available where `gaz-mcp` runs. This is only needed by `generate_flamegraph`.
 
 ## Installation
 

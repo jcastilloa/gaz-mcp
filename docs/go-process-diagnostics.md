@@ -114,7 +114,7 @@ All diagnostic tools are read-only from the target's perspective. Tools that acc
 | `capture_profile` | `target`, `type`, `seconds?` | Capture and persist `cpu`, `heap`, `allocs`, `goroutine`, `block`, `mutex`, or `threadcreate`, returning a `profile_id`. CPU uses `/debug/pprof/profile?seconds=N`; it accepts 1–60 seconds and defaults to 10. `seconds` is ignored for other profile types. |
 | `analyze_profile` | `profile_id`, `top_n?` | Return functions ordered by cumulative cost, with flat and cumulative values. `top_n` defaults to 20 and is limited to 1–100. |
 | `diff_profiles` | `id_a`, `id_b`, `top_n?` | Compare two stored profiles with the same primary sample type and unit. Positive values grew from A to B. |
-| `generate_flamegraph` | `profile_id` | Generate a PNG call graph from a stored profile. It requires `go tool pprof` and Graphviz `dot` in `PATH`. |
+| `generate_flamegraph` | `profile_id` | Generate an SVG flame graph from a stored profile. |
 | `analyze_goroutines` | `target` | Fetch `goroutine?debug=2`, group equivalent stacks, retain state and blocked duration, and label known signatures. |
 | `get_runtime_stats` | `target` | Read `num_goroutine`, optional `num_threads`, and expvar `memstats`/GC values. |
 | `get_db_pool_stats` | `target` | Read the optional `gaz_diagnostics.db_pools` contract. A target without it yields no pool data. |
@@ -199,12 +199,12 @@ Without the optional pool instrumentation, a `database/sql` waiter remains usefu
 
 Otherwise it reports a **suspected** pool exhaustion and recommends publishing `DBStats`. The other signature labels are evidence to investigate, not automatic root-cause conclusions.
 
-`get_runtime_stats` reads `HeapAlloc`, `HeapSys`, `NumGC`, `PauseTotalNs`, and `LastGC` from standard `memstats`. Missing optional variables such as `num_goroutine` or `num_threads` appear as zero values; use `get_expvars` when a distinction between zero and an unpublished variable matters.
+`get_runtime_stats` reads `HeapAlloc`, `HeapSys`, `NumGC`, `PauseTotalNs`, and `LastGC` from standard `memstats`. It includes `goroutine_source` when `num_goroutine` is published. During `diagnose`, an absent `num_goroutine` is filled from the goroutine dump and marked as `goroutine_dump`; `get_runtime_stats` alone leaves it at zero. Missing optional `num_threads` appears as zero; use `get_expvars` when a distinction between zero and an unpublished variable matters.
 
 ## Operational notes
 
 - Profile and endpoint responses are capped at 128 MiB. Very large profiles or expvar responses are rejected rather than kept in memory unboundedly.
-- `generate_flamegraph` is the MCP tool name, but its current renderer produces a PNG call graph through `go tool pprof -png` and Graphviz.
+- `generate_flamegraph` renders an SVG flame graph locally from the captured profile; it does not require Graphviz or the target binary.
 - CPU profiles are an active capture on the target for their chosen duration; prefer a short, representative interval and avoid indiscriminate repeated captures on a busy production process.
 - `get_expvars` returns the full endpoint payload. Treat it as potentially sensitive and avoid forwarding large raw outputs where a focused analysis is enough.
 - For SQL and Jenkins guidance, return to the [documentation map](../README.md#documentation-map).

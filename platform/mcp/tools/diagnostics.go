@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 
 	diagnosticsApp "github.com/jcastillo/gaz-mcp/mcp/application/diagnostics"
@@ -26,7 +24,7 @@ func (d Diagnostics) CaptureProfileDefinition() mcp.Tool {
 		targetParameter(),
 		mcp.WithString("type", mcp.Required(), mcp.Enum("cpu", "heap", "allocs", "goroutine", "block", "mutex", "threadcreate"), mcp.Description("Profile type to capture.")),
 		mcp.WithNumber("seconds", mcp.Description("CPU capture duration in seconds; 1–60, default 10. Ignored for non-CPU profiles."), mcp.Min(1), mcp.Max(diagnosticsApp.MaxCPUProfileSeconds)),
-		readOnlyTool(),
+		captureProfileTool(),
 	)
 }
 
@@ -92,7 +90,7 @@ func (d Diagnostics) DiffProfilesHandler(ctx context.Context, request mcp.CallTo
 
 func (d Diagnostics) GenerateFlamegraphDefinition() mcp.Tool {
 	return mcp.NewTool("generate_flamegraph",
-		mcp.WithDescription("Generate a PNG call graph for a captured pprof profile. Requires go tool pprof and Graphviz dot available in PATH."),
+		mcp.WithDescription("Generate an SVG flame graph for a captured pprof profile."),
 		mcp.WithString("profile_id", mcp.Required(), mcp.Description("ID returned by capture_profile.")),
 		readOnlyTool(),
 	)
@@ -103,11 +101,11 @@ func (d Diagnostics) GenerateFlamegraphHandler(ctx context.Context, request mcp.
 	if result != nil {
 		return result, nil
 	}
-	image, err := d.generateFlamegraph(ctx, id)
+	image, err := d.service.GenerateFlamegraph(ctx, id)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("generate flamegraph: %v", err)), nil
 	}
-	return mcp.NewToolResultImage("Call graph generated from captured profile.", base64.StdEncoding.EncodeToString(image), "image/png"), nil
+	return mcp.NewToolResultImage("Flame graph generated from captured profile.", base64.StdEncoding.EncodeToString(image), "image/svg+xml"), nil
 }
 
 func (d Diagnostics) AnalyzeGoroutinesDefinition() mcp.Tool {
@@ -210,41 +208,6 @@ func (d Diagnostics) DiagnoseHandler(ctx context.Context, request mcp.CallToolRe
 	return jsonToolResult(report)
 }
 
-func (d Diagnostics) generateFlamegraph(ctx context.Context, id string) ([]byte, error) {
-	if _, err := exec.LookPath("dot"); err != nil {
-		return nil, fmt.Errorf("Graphviz dot is not installed or not in PATH")
-	}
-	data, err := d.service.ProfileData(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	profileFile, err := os.CreateTemp("", "gaz-mcp-profile-*.pprof")
-	if err != nil {
-		return nil, err
-	}
-	profilePath := profileFile.Name()
-	defer os.Remove(profilePath)
-	if _, err := profileFile.Write(data); err != nil {
-		profileFile.Close()
-		return nil, err
-	}
-	if err := profileFile.Close(); err != nil {
-		return nil, err
-	}
-	imageFile, err := os.CreateTemp("", "gaz-mcp-profile-*.png")
-	if err != nil {
-		return nil, err
-	}
-	imagePath := imageFile.Name()
-	imageFile.Close()
-	defer os.Remove(imagePath)
-	output, err := exec.CommandContext(ctx, "go", "tool", "pprof", "-png", "-output", imagePath, profilePath).CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("go tool pprof: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	return os.ReadFile(imagePath)
-}
-
 func targetParameter() mcp.ToolOption {
 	return mcp.WithString("target", mcp.Required(), mcp.Description("Base HTTP(S) URL of the Go process exposing /debug/pprof and optionally /debug/vars; for example http://service:6060."))
 }
@@ -254,6 +217,15 @@ func readOnlyTool() mcp.ToolOption {
 		ReadOnlyHint:    mcp.ToBoolPtr(true),
 		DestructiveHint: mcp.ToBoolPtr(false),
 		IdempotentHint:  mcp.ToBoolPtr(true),
+		OpenWorldHint:   mcp.ToBoolPtr(true),
+	})
+}
+
+func captureProfileTool() mcp.ToolOption {
+	return mcp.WithToolAnnotation(mcp.ToolAnnotation{
+		ReadOnlyHint:    mcp.ToBoolPtr(false),
+		DestructiveHint: mcp.ToBoolPtr(false),
+		IdempotentHint:  mcp.ToBoolPtr(false),
 		OpenWorldHint:   mcp.ToBoolPtr(true),
 	})
 }

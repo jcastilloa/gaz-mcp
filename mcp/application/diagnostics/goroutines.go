@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-var goroutineHeader = regexp.MustCompile(`^goroutine \d+ \[([^,\]]+)(?:, ([^\]]+))?\]:$`)
+var goroutineHeader = regexp.MustCompile(`^goroutine \d+(?:\s+[^\[]+)?\s+\[([^,\]]+)(?:, ([^\]]+))?\]:$`)
 var hexAddress = regexp.MustCompile(`0x[0-9a-fA-F]+`)
 
 type parsedGoroutine struct {
@@ -35,6 +35,7 @@ func AnalyzeGoroutines(dump string) (GoroutineReport, error) {
 }
 
 func parseGoroutineDump(dump string) ([]parsedGoroutine, error) {
+	dump = strings.ReplaceAll(dump, "\r\n", "\n")
 	blocks := strings.Split(strings.TrimSpace(dump), "\n\n")
 	items := make([]parsedGoroutine, 0, len(blocks))
 	for _, block := range blocks {

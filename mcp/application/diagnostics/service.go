@@ -45,23 +45,19 @@ func (s Service) CaptureProfile(ctx context.Context, target, profileType string,
 }
 
 func (s Service) AnalyzeProfile(ctx context.Context, id string, topN int) (ProfileAnalysis, error) {
-	captured, err := s.profiles.Load(ctx, id)
+	loaded, err := s.loadProfile(ctx, id)
 	if err != nil {
 		return ProfileAnalysis{}, err
 	}
-	parsed, err := profile.ParseData(captured.Data)
-	if err != nil {
-		return ProfileAnalysis{}, fmt.Errorf("parse profile %q: %w", id, err)
-	}
-	return summarizeProfile(captured.Metadata, parsed, topN), nil
+	return summarizeProfile(loaded.metadata, loaded.profile, topN), nil
 }
 
-func (s Service) ProfileData(ctx context.Context, id string) ([]byte, error) {
-	captured, err := s.profiles.Load(ctx, id)
+func (s Service) GenerateFlamegraph(ctx context.Context, id string) ([]byte, error) {
+	loaded, err := s.loadProfile(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	return captured.Data, nil
+	return renderFlamegraph(loaded.profile)
 }
 
 func (s Service) DiffProfiles(ctx context.Context, idA, idB string, topN int) (ProfileDiff, error) {
@@ -73,11 +69,19 @@ func (s Service) DiffProfiles(ctx context.Context, idA, idB string, topN int) (P
 	if err != nil {
 		return ProfileDiff{}, err
 	}
-	if len(first.profile.SampleType) == 0 || len(second.profile.SampleType) == 0 || first.profile.SampleType[0].Type != second.profile.SampleType[0].Type || first.profile.SampleType[0].Unit != second.profile.SampleType[0].Unit {
+	firstSample, ok := selectedSampleType(first.profile)
+	if !ok {
+		return ProfileDiff{}, fmt.Errorf("first profile has no sample type")
+	}
+	secondSample, ok := selectedSampleType(second.profile)
+	if !ok {
+		return ProfileDiff{}, fmt.Errorf("second profile has no sample type")
+	}
+	if firstSample.Type != secondSample.Type || firstSample.Unit != secondSample.Unit {
 		return ProfileDiff{}, fmt.Errorf("profiles must use the same primary sample type")
 	}
-	firstSummary := summarizeProfile(first.metadata, first.profile, 0)
-	secondSummary := summarizeProfile(second.metadata, second.profile, 0)
+	firstSummary := summarizeProfileForSample(first.metadata, first.profile, firstSample, 0)
+	secondSummary := summarizeProfileForSample(second.metadata, second.profile, secondSample, 0)
 	return diffProfileSummaries(firstSummary, secondSummary, topN), nil
 }
 
@@ -122,7 +126,12 @@ func (s Service) Diagnose(ctx context.Context, target string) (DiagnosisReport, 
 	if err != nil {
 		return BuildDiagnosis(RuntimeStats{Instrumentation: "unavailable: /debug/vars could not be read"}, goroutines, nil), nil
 	}
-	return BuildDiagnosis(runtimeStatsFromExpvars(vars), goroutines, dbPoolStatsFromExpvars(vars)), nil
+	runtime := runtimeStatsFromExpvars(vars)
+	if runtime.GoroutineSource == "" {
+		runtime.Goroutines = goroutines.Total
+		runtime.GoroutineSource = "goroutine_dump"
+	}
+	return BuildDiagnosis(runtime, goroutines, dbPoolStatsFromExpvars(vars)), nil
 }
 
 type loadedProfile struct {
@@ -156,33 +165,75 @@ func normalizeCaptureDuration(profileType string, seconds int) (int, error) {
 }
 
 func summarizeProfile(metadata domain.ProfileMetadata, parsed *profile.Profile, topN int) ProfileAnalysis {
-	if len(parsed.SampleType) == 0 {
+	sampleType, ok := selectedSampleType(parsed)
+	if !ok {
 		return ProfileAnalysis{Profile: metadata}
 	}
-	functions := profileFunctions(parsed)
+	return summarizeProfileForSample(metadata, parsed, sampleType, topN)
+}
+
+func summarizeProfileForSample(metadata domain.ProfileMetadata, parsed *profile.Profile, sampleType sampleType, topN int) ProfileAnalysis {
+	functions := profileFunctions(parsed, sampleType.index)
 	if topN > 0 && len(functions) > topN {
 		functions = functions[:topN]
 	}
-	return ProfileAnalysis{Profile: metadata, SampleType: parsed.SampleType[0].Type, Unit: parsed.SampleType[0].Unit, Total: profileTotal(parsed), Functions: functions}
+	return ProfileAnalysis{Profile: metadata, SampleType: sampleType.Type, Unit: sampleType.Unit, Total: profileTotal(parsed, sampleType.index), Functions: functions}
 }
 
-func profileTotal(parsed *profile.Profile) int64 {
+type sampleType struct {
+	index int
+	Type  string
+	Unit  string
+}
+
+func selectedSampleType(parsed *profile.Profile) (sampleType, bool) {
+	if len(parsed.SampleType) == 0 {
+		return sampleType{}, false
+	}
+	for index, value := range parsed.SampleType {
+		if value.Type == parsed.DefaultSampleType {
+			return sampleType{index: index, Type: value.Type, Unit: value.Unit}, true
+		}
+	}
+	if index := preferredSampleType(parsed); index >= 0 {
+		value := parsed.SampleType[index]
+		return sampleType{index: index, Type: value.Type, Unit: value.Unit}, true
+	}
+	value := parsed.SampleType[0]
+	return sampleType{Type: value.Type, Unit: value.Unit}, true
+}
+
+func preferredSampleType(parsed *profile.Profile) int {
+	preferred := map[string]string{
+		"heap":   "inuse_space",
+		"allocs": "alloc_space",
+	}
+	wanted := preferred[parsed.PeriodType.Type]
+	for index, value := range parsed.SampleType {
+		if value.Type == wanted {
+			return index
+		}
+	}
+	return -1
+}
+
+func profileTotal(parsed *profile.Profile, sampleIndex int) int64 {
 	var total int64
 	for _, sample := range parsed.Sample {
-		if len(sample.Value) > 0 {
-			total += sample.Value[0]
+		if sampleIndex < len(sample.Value) {
+			total += sample.Value[sampleIndex]
 		}
 	}
 	return total
 }
 
-func profileFunctions(parsed *profile.Profile) []FunctionSample {
+func profileFunctions(parsed *profile.Profile, sampleIndex int) []FunctionSample {
 	values := make(map[string]*FunctionSample)
 	for _, sample := range parsed.Sample {
-		if len(sample.Value) == 0 || len(sample.Location) == 0 {
+		if sampleIndex >= len(sample.Value) || len(sample.Location) == 0 {
 			continue
 		}
-		value := sample.Value[0]
+		value := sample.Value[sampleIndex]
 		for index, location := range sample.Location {
 			name := locationName(location)
 			if name == "" {
