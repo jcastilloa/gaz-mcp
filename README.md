@@ -2,7 +2,7 @@
 
 # gaz-mcp
 
-`gaz-mcp` is an MCP server for read-only MySQL/PostgreSQL access, Jenkins administration with configuration history, and diagnosis of running Go processes through `pprof` and `expvar`.
+`gaz-mcp` is an MCP server for read-only MySQL/PostgreSQL access, Jenkins administration with configuration history, and diagnosis of running Go processes through `pprof` and `expvar`. It also ships the independent [`diagnostics`](diagnostics/) Go module for adding those endpoints to target services.
 
 It uses stdio transport: one binary, no daemon, and no listener opened by the MCP itself. SQL and Jenkins targets are configured once; a Go diagnostic target is supplied directly with each tool call.
 
@@ -206,11 +206,20 @@ The root document contains installation, configuration, client setup, architectu
 | [Jenkins](docs/jenkins.md) | All 33 tools, exact parameters, snapshots and restore coverage, large-output distillation, workflows, and security notes |
 | [Go process diagnostics](docs/go-process-diagnostics.md) | Service-side `pprof`/`expvar` snippet, optional `database/sql` metrics, all nine tools, findings, and profiling workflows |
 
+The service-side module is released independently using module-compatible tags
+such as `diagnostics/v0.1.0`; MCP server release tags (`v0.3.x`) are not module
+versions for `github.com/jcastilloa/gaz-mcp/diagnostics`.
+
+To move the service endpoints from `/debug/...` to a custom prefix, use
+`diagnostics.WithBasePath("/internal/diagnostics")`; then pass
+`http://service:6060/internal/diagnostics` as the diagnostic tool `target`.
+
 ## Architecture
 
 ```text
 gaz-mcp/
 ├── cmd/server/              # Entry point
+├── diagnostics/             # Independent service-side instrumentation Go module
 ├── mcp/
 │   ├── application/
 │   │   ├── diagnostics/     # Go process diagnosis use cases
@@ -248,6 +257,7 @@ go test ./mcp/application/jenkins/... -v          # Jenkins service unit tests
 go test ./platform/mcp/snapshot/... -v            # SQLite snapshot integration tests
 go test ./mcp/application/diagnostics/... -v      # Diagnostic service tests
 go test ./platform/mcp/diagnostics/... -v         # HTTP adapter and profile-store tests
+(cd diagnostics && go test ./...)                 # Service-side instrumentation module
 ```
 
 ## License

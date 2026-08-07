@@ -10,9 +10,98 @@ For installation and shared configuration, see the [root README](../README.md).
 
 The target must expose `/debug/pprof/` and, for runtime and custom metrics, `/debug/vars`. A target without SQL is fully supported; pool metrics are an optional extension, not a requirement.
 
+### Reusable instrumentation module
+
+This repository includes an independent Go module at
+`github.com/jcastilloa/gaz-mcp/diagnostics`. It contains no MCP or Jenkins
+dependencies, so a service can import only the instrumentation it needs:
+
+```bash
+go get github.com/jcastilloa/gaz-mcp/diagnostics@v0.1.0
+```
+
+Use a dedicated mux and register everything with one call. The default paths
+are `/debug/pprof/` and `/debug/vars`:
+
+```go
+import (
+	"database/sql"
+	"net/http"
+
+	"github.com/jcastilloa/gaz-mcp/diagnostics"
+)
+
+func serve(db *sql.DB) error {
+	mux := http.NewServeMux()
+	if err := diagnostics.Register(mux,
+		diagnostics.WithDBPool("primary", db),
+		diagnostics.WithIPAllowlist("10.0.0.0/8", "192.168.0.0/16"),
+		diagnostics.WithMiddleware(requireInternalOperator),
+	); err != nil {
+		return err
+	}
+	return http.ListenAndServe(":6060", mux)
+}
+```
+
+`diagnostics.MustRegister(mux, ...)` is available when startup configuration
+errors should stop the process immediately.
+
+SQL is optional; a service without a database can simply call
+`diagnostics.Register(mux)`. To mount below a custom prefix, pass an absolute
+path to `WithBasePath`:
+
+```go
+diagnostics.Register(mux, diagnostics.WithBasePath("/internal/diagnostics"))
+```
+
+That single option changes the endpoint mapping as follows:
+
+| Default route | WithBasePath(`/internal/diagnostics`) |
+|---|---|
+| `/debug/pprof/` | `/internal/diagnostics/debug/pprof/` |
+| `/debug/pprof/goroutine?debug=2` | `/internal/diagnostics/debug/pprof/goroutine?debug=2` |
+| `/debug/pprof/profile?seconds=10` | `/internal/diagnostics/debug/pprof/profile?seconds=10` |
+| `/debug/vars` | `/internal/diagnostics/debug/vars` |
+
+The MCP `target` must include that prefix, for example
+`http://service:6060/internal/diagnostics`; the tools append only the
+`/debug/...` suffix. A trailing slash is accepted and normalized. The base
+path must start with `/`; values such as `internal/diagnostics` are rejected.
+URL query, fragment, and router wildcard delimiters are rejected too.
+For routers that accept a handler rather than a `*http.ServeMux`, use
+`diagnostics.Handler(diagnostics.WithBasePath("/internal/diagnostics"), ...)`
+and mount the returned handler under the desired route. Do not mount the
+handler under the same prefix twice, or the resulting path will be duplicated.
+
+`WithCustomVars` receives an `*expvar.Map`. Variables registered through the
+hook are returned under `gaz_diagnostics.custom`, while database statistics
+remain under `gaz_diagnostics.db_pools`:
+
+```go
+diagnostics.Register(mux, diagnostics.WithCustomVars(func(vars *expvar.Map) {
+	vars.Set("queue_depth", expvar.Func(func() any { return queue.Len() }))
+}))
+```
+
+The package does not impose authentication. `WithMiddleware` is the hook for
+the service's existing authentication/authorization, and `WithIPAllowlist`
+adds an optional network boundary; when both are configured, both checks must
+pass. Client IP selection follows the service convention: `True-Client-IP`,
+then `X-Forwarded-For`, then `RemoteAddr`. Forwarded headers must only be
+accepted from a trusted proxy that sanitizes them; the package does not infer
+trust from those headers. Invalid supplied client-IP headers are denied when
+an allowlist is enabled. `Register` intentionally rejects
+`http.DefaultServeMux` and the module never adds `pprof` handlers globally.
+However, Go's `expvar` package registers `GET /debug/vars` on the global mux
+when imported. A process that uses this module must not serve the global mux;
+serve the dedicated mux passed to `Register` (or mount `Handler` inside a
+protected router group) so every reachable diagnostics route is protected.
+
 ### Baseline: pprof and expvar
 
-For a service with its own `http.ServeMux`, register the handlers before serving requests:
+If adopting the reusable module is not possible, a service may register the
+standard handlers manually on its own `http.ServeMux`:
 
 ```go
 package diagnostics
@@ -117,7 +206,7 @@ All diagnostic tools are read-only from the target's perspective. Tools that acc
 | `generate_flamegraph` | `profile_id` | Generate an SVG flame graph from a stored profile. |
 | `analyze_goroutines` | `target` | Fetch `goroutine?debug=2`, group equivalent stacks, retain state and blocked duration, and label known signatures. |
 | `get_runtime_stats` | `target` | Read `num_goroutine`, optional `num_threads`, and expvar `memstats`/GC values. |
-| `get_db_pool_stats` | `target` | Read the optional `gaz_diagnostics.db_pools` contract. A target without it yields no pool data. |
+| `get_db_pool_stats` | `target` | Read the optional `gaz_diagnostics.db_pools` contract. Returns `{ "pools": [...] }`; a target without it returns an empty `pools` array. |
 | `get_expvars` | `target` | Return the complete JSON object from `/debug/vars`, including service-specific variables. |
 | `diagnose` | `target` | Combine goroutine groups, runtime data, and optional pool metrics into one diagnosis report. |
 

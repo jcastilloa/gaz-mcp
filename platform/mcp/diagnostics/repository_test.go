@@ -41,3 +41,20 @@ func TestRepositoryRejectsInvalidTarget(t *testing.T) {
 		t.Fatal("expected an invalid target error")
 	}
 }
+
+func TestRepositoryPreservesTargetBasePath(t *testing.T) {
+	requests := make([]string, 0, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests = append(requests, request.URL.RequestURI())
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte("{}"))
+	}))
+	defer server.Close()
+
+	if _, err := NewRepository().FetchExpvars(context.Background(), server.URL+"/internal/diagnostics"); err != nil {
+		t.Fatalf("fetch expvars: %v", err)
+	}
+	if got, want := requests[0], "/internal/diagnostics/debug/vars"; got != want {
+		t.Fatalf("request = %q, want %q", got, want)
+	}
+}

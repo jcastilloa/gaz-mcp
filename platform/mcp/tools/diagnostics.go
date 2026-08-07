@@ -14,6 +14,10 @@ type Diagnostics struct {
 	service diagnosticsApp.Service
 }
 
+type dbPoolStatsResult struct {
+	Pools []diagnosticsApp.DBPoolStats `json:"pools"`
+}
+
 func NewDiagnostics(service diagnosticsApp.Service) Diagnostics {
 	return Diagnostics{service: service}
 }
@@ -150,7 +154,7 @@ func (d Diagnostics) GetRuntimeStatsHandler(ctx context.Context, request mcp.Cal
 
 func (d Diagnostics) GetDBPoolStatsDefinition() mcp.Tool {
 	return mcp.NewTool("get_db_pool_stats",
-		mcp.WithDescription("Read optional database/sql pool stats from target/debug/vars under gaz_diagnostics.db_pools. Returns an empty list when the target does not use SQL or has not installed the optional instrumentation."),
+		mcp.WithDescription("Read optional database/sql pool stats from target/debug/vars under gaz_diagnostics.db_pools. Returns an object with a pools array, which is empty when the target does not use SQL or has not installed the optional instrumentation."),
 		targetParameter(),
 		readOnlyTool(),
 	)
@@ -165,7 +169,10 @@ func (d Diagnostics) GetDBPoolStatsHandler(ctx context.Context, request mcp.Call
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("get DB pool stats: %v", err)), nil
 	}
-	return jsonToolResult(pools)
+	if pools == nil {
+		pools = []diagnosticsApp.DBPoolStats{}
+	}
+	return jsonToolResult(dbPoolStatsResult{Pools: pools})
 }
 
 func (d Diagnostics) GetExpvarsDefinition() mcp.Tool {

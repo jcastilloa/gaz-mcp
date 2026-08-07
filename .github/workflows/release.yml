@@ -25,7 +25,15 @@ jobs:
       - name: Run tests
         run: go test ./...
 
+      - name: Run diagnostics module tests
+        working-directory: diagnostics
+        run: go test ./...
+
       - name: Run vet
+        run: go vet ./...
+
+      - name: Vet diagnostics module
+        working-directory: diagnostics
         run: go vet ./...
 
       - name: Build release artifacts
