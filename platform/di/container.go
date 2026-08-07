@@ -3,11 +3,13 @@ package di
 import (
 	"fmt"
 
+	diagnosticsApp "github.com/jcastillo/gaz-mcp/mcp/application/diagnostics"
 	jenkinsApp "github.com/jcastillo/gaz-mcp/mcp/application/jenkins"
 	sqlApp "github.com/jcastillo/gaz-mcp/mcp/application/sql"
 	jenkinsDomain "github.com/jcastillo/gaz-mcp/mcp/domain/jenkins"
 	sqlDomain "github.com/jcastillo/gaz-mcp/mcp/domain/sql"
 	"github.com/jcastillo/gaz-mcp/platform/mcp/commands"
+	diagnosticsInfra "github.com/jcastillo/gaz-mcp/platform/mcp/diagnostics"
 	jenkinsInfra "github.com/jcastillo/gaz-mcp/platform/mcp/jenkins"
 	mcpserver "github.com/jcastillo/gaz-mcp/platform/mcp/server"
 	snapshotInfra "github.com/jcastillo/gaz-mcp/platform/mcp/snapshot"
@@ -120,6 +122,17 @@ func (c *Container) Build() (*di.Container, error) {
 		},
 	})
 
+	// --- Go process diagnostics tools ---
+	defs = append(defs, di.Def{
+		Name:  "mcp.diagnostics.tool",
+		Scope: di.App,
+		Build: func(ctn di.Container) (interface{}, error) {
+			repository := diagnosticsInfra.NewRepository()
+			store := diagnosticsInfra.NewProfileStore(diagnosticsInfra.DefaultProfileDirectory())
+			return tools.NewDiagnostics(diagnosticsApp.NewService(repository, store)), nil
+		},
+	})
+
 	// --- Snapshot repository (shared across all Jenkins environments) ---
 	defs = append(defs, di.Def{
 		Name:  "mcp.snapshot.repo",
@@ -193,6 +206,7 @@ func (c *Container) Build() (*di.Container, error) {
 		Build: func(ctn di.Container) (interface{}, error) {
 			server := ctn.Get("mcp.server").(*mcpserver.Server)
 			sqlTool := ctn.Get("mcp.sql.tool").(tools.SQLQuery)
+			diagnosticsTool := ctn.Get("mcp.diagnostics.tool").(tools.Diagnostics)
 
 			var jenkinsTools commands.JenkinsTools
 			if len(c.jenkinsEnvs) > 0 {
@@ -201,7 +215,7 @@ func (c *Container) Build() (*di.Container, error) {
 
 			return commands.NewRunner(
 				c.serviceName, c.serviceCfg, c.version,
-				server, sqlTool, jenkinsTools,
+				server, sqlTool, diagnosticsTool, jenkinsTools,
 			), nil
 		},
 	})

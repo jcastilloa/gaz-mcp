@@ -1,44 +1,50 @@
-![gaz-mcp — AMySQL, PostgreSQL and Jenkins proxy exposed as an MCP server](assets/header.png)
+![gaz-mcp — MySQL, PostgreSQL, Jenkins, and Go diagnostics exposed as an MCP server](assets/header.png)
 
 # gaz-mcp
 
-MySQL, PostgreSQL and Jenkins proxy exposed as an MCP server. Lets AI coding agents explore schemas, run `SELECT` queries safely, and interact with Jenkins CI/CD pipelines — with automatic config versioning before every write.
+`gaz-mcp` is an MCP server for read-only MySQL/PostgreSQL access, Jenkins administration with configuration history, and diagnosis of running Go processes through `pprof` and `expvar`.
 
-## Overview
+It uses stdio transport: one binary, no daemon, and no listener opened by the MCP itself. SQL and Jenkins targets are configured once; a Go diagnostic target is supplied directly with each tool call.
 
-`gaz-mcp` wraps MySQL, PostgreSQL and Jenkins connections in an MCP-compatible stdio server. AI agents call the `sql_query` tool to inspect tables and query data, and the `jenkins_*` family of tools to manage jobs, builds, nodes, views, credentials and more.
+## Capabilities
 
-Each SQL environment bundles engine type + connection credentials. Each Jenkins environment bundles URL + credentials. The agent only needs to know the environment name — the engine is transparent.
+| Capability | Purpose | Configuration | Complete guide |
+|---|---|---|---|
+| SQL | Inspect MySQL and PostgreSQL data without writes | `environments` | [SQL: MySQL and PostgreSQL](docs/sql.md) |
+| Jenkins | Inspect and administer CI/CD, including configuration history | `jenkins`, `snapshot` | [Jenkins](docs/jenkins.md) |
+| Go diagnostics | Capture profiles and inspect goroutines, runtime metrics, and optional SQL pools | Per-call `target` URL | [Go process diagnostics](docs/go-process-diagnostics.md) |
 
-## Features
+### Shared properties
 
 - **MCP stdio server** — one binary, no daemon, no network ports.
-- **Multi-environment** — configure MySQL, PostgreSQL and Jenkins environments; switch per query/call.
-- **Read-only SQL enforcement** — app-level keyword block + engine-level read-only transaction.
-- **Dynamic database selection** — the agent picks the target database per query, not from config.
-- **Jenkins proxy** — 33 tools covering jobs, builds, nodes, views, queue, plugins, credentials and script console.
-- **Automatic config versioning** — every Jenkins write operation snapshots the previous config to SQLite before applying changes. Restore any object to any previous version.
-- **SHA-256 deduplication** — identical consecutive snapshots are skipped automatically.
-- **JSON output** — all tools return structured JSON, easy to parse.
-- **YAML config** via Viper with environment variable overrides (API keys never appear in logs).
-- **Hexagonal architecture** — clean separation between domain, application, and platform layers.
+- **Multi-environment SQL and Jenkins** — select the configured environment per call.
+- **Read-only SQL enforcement** — application checks plus database read-only sessions.
+- **Dynamic database selection** — the database belongs to each SQL request, not to static configuration.
+- **Jenkins toolset** — 33 tools for jobs, builds, nodes, views, queue, plugins, credentials, script console, and snapshots.
+- **Configuration history** — Jenkins snapshots are held in SQLite for the operations that support capture and rollback.
+- **SHA-256 deduplication** — identical consecutive configuration snapshots are not stored twice.
+- **Go process diagnosis** — pprof profiles, grouped goroutine stacks, expvar runtime statistics, optional `database/sql` pool metrics, and a correlated diagnosis.
+- **Structured JSON output** — designed for programmatic consumption.
+- **YAML configuration** — Viper-based configuration, with deployment-time secret rendering.
+- **Hexagonal architecture** — domain, application, and platform layers remain separate.
 
 ## Requirements
 
-- Go **1.22+** (build from source), or a prebuilt binary.
+- The Go version declared in [`go.mod`](go.mod) (currently Go **1.26.0**) to build from source, or a prebuilt binary.
 - A MySQL/PostgreSQL server and/or Jenkins instance reachable from the host running the MCP.
+- For a rendered Go profile graph, Graphviz `dot` must be available where `gaz-mcp` runs. This is only needed by `generate_flamegraph`.
 
 ## Installation
 
-### Option A: Build from source
+### Build from source
 
 ```bash
 go build -o gaz-mcp ./cmd/server/
 ```
 
-### Option B: Prebuilt binary (no build required)
+### Prebuilt binary
 
-**Linux / macOS:**
+Linux and macOS:
 
 ```bash
 # Latest release
@@ -48,8 +54,6 @@ curl -fsSL https://raw.githubusercontent.com/jcastilloa/gaz-mcp/master/scripts/i
 curl -fsSL https://raw.githubusercontent.com/jcastilloa/gaz-mcp/master/scripts/install.sh | VERSION=vX.Y.Z sh
 ```
 
-**Installer environment variables:**
-
 | Variable | Default |
 |---|---|
 | `REPO` | `jcastilloa/gaz-mcp` |
@@ -57,9 +61,9 @@ curl -fsSL https://raw.githubusercontent.com/jcastilloa/gaz-mcp/master/scripts/i
 | `INSTALL_DIR` | `~/.local/bin` |
 | `VERSION` | Latest release tag |
 
-### Option C: Agent skill (zero binary install)
+### Agent skills
 
-When the MCP is already registered in the agent's MCP client config, drop `SKILL.md` into the agent's skills directory so it knows how to use the tool:
+When the MCP is already registered in an MCP client, install the relevant skill so the agent knows the available tools and their operating rules.
 
 ```bash
 # Project-level (recommended for teams)
@@ -78,11 +82,11 @@ cp SKILL.md ~/.claude/skills/gaz-mcp-db/SKILL.md
 | OpenCode | `.opencode/skills/gaz-mcp-db/SKILL.md` | `~/.opencode/skills/gaz-mcp-db/SKILL.md` |
 | Cursor | `.cursor/skills/gaz-mcp-db/SKILL.md` | `~/.cursor/skills/gaz-mcp-db/SKILL.md` |
 
-The skill teaches the agent the `sql_query` signature, usage patterns, read-only constraints, and best practices — so it knows exactly how to query your databases.
+The SQL skill describes `sql_query`, its read-only boundaries, and schema-discovery patterns. The Jenkins skill documents the Jenkins tools and safe handling of large results. The diagnostic guide above is self-contained for targets that expose `pprof` and `expvar`.
 
 ## Configuration
 
-Create `config.yaml` in the working directory (or at `~/.config/gaz-mcp/config.yaml`):
+Create `config.yaml` in the working directory or at `~/.config/gaz-mcp/config.yaml`.
 
 ```yaml
 service:
@@ -110,7 +114,7 @@ jenkins:
   production:
     url: https://jenkins.example.com
     user: admin
-    api_key: "${JENKINS_PROD_API_KEY}"   # Jenkins API token or password — always use env vars
+    api_key: "${JENKINS_PROD_API_KEY}" # Jenkins API token or password
     timeout: 30s
     insecure: false
   staging:
@@ -118,41 +122,44 @@ jenkins:
     user: admin
     api_key: "${JENKINS_STAGING_API_KEY}"
     timeout: 30s
-    insecure: true                        # allow self-signed TLS
+    insecure: true # allow self-signed TLS
 
-# Automatic config versioning (SQLite)
+# Jenkins configuration history (SQLite, pure Go)
 snapshot:
   enabled: true
   db_path: ~/.config/gaz-mcp/jenkins_history.db
-  max_versions: 50    # keep last 50 versions per object (0 = unlimited)
+  max_versions: 50 # positive retention limit per object
   auto_prune: true
 ```
 
-All keys support environment variable overrides. `engine` defaults to `mysql` when omitted. The `database` is passed per SQL query, not configured statically.
+`engine` defaults to `mysql` when it is omitted. The SQL `database` is selected by the tool call, not here. The Go diagnostic `target` is likewise deliberately not configured here: the caller supplies the authorised process URL for each request.
 
-> **Security:** The `api_key` field accepts either a **Jenkins API token** (recommended — generated in *User → Configure → API Token*) or a plain **password**. Always supply secrets via environment variables (e.g. `JENKINS_PROD_API_KEY`). Values are masked in all JSON output and logs.
+> **Configuration note:** the `${...}` values in the sample are deployment templates. The current reader loads YAML strings literally; render those placeholders from a secret manager or other deployment tooling before starting `gaz-mcp`. `max_versions` is currently normalised to the default of 50 when configured as zero or another non-positive value, so use a positive value in YAML.
 
-## Quick Start
+> **Security:** `api_key` accepts a Jenkins API token (recommended, created in *User → Configure → API Token*) or a password. Keep the resolved secret out of version control and use restricted deployment-time configuration. Jenkins API keys are masked in JSON output and logs.
+
+See [`config.sample.yaml`](config.sample.yaml) for the complete sample, including the OpenAI provider settings used by the application.
+
+## Quick start
 
 ### 1. Configure
 
 ```bash
 cp config.sample.yaml config.yaml
-# Edit environments, jenkins, and snapshot sections
-export JENKINS_PROD_API_KEY=your-api-key
+# Edit the environments, jenkins, and snapshot sections, then render secret placeholders.
 ```
 
 ### 2. Run
 
 ```bash
 go run ./cmd/server/ --transport stdio
-# or with the built binary:
+# Or with the built binary:
 ./gaz-mcp --transport stdio
 ```
 
-### 3. Register in your MCP client
+### 3. Register in an MCP client
 
-#### Claude Desktop / Cursor / JSON-based clients
+#### Claude Desktop, Cursor, and JSON-based clients
 
 ```json
 {
@@ -174,7 +181,7 @@ args = ["--transport", "stdio"]
 startup_timeout_sec = 20.0
 ```
 
-#### Codex (CLI)
+#### Codex CLI
 
 ```bash
 codex mcp add gaz-mcp -- /absolute/path/to/gaz-mcp --transport stdio
@@ -186,104 +193,19 @@ codex mcp add gaz-mcp -- /absolute/path/to/gaz-mcp --transport stdio
 opencode mcp add
 ```
 
-Follow the prompts: project or global → name `gaz-mcp` → type `local` → command `/absolute/path/to/gaz-mcp --transport stdio`.
+Follow the prompts: project or global, name `gaz-mcp`, type `local`, then command `/absolute/path/to/gaz-mcp --transport stdio`.
 
-> Always use an **absolute** binary path and `stdio` transport.
+Always use an absolute binary path and stdio transport.
 
-## MCP Tool Reference
+## Documentation map
 
-### `sql_query`
+The root document contains installation, configuration, client setup, architecture, and development. The complete operational references live in the focused guides below; none of the tool reference is intentionally duplicated here.
 
-Execute a read-only SQL query against a configured environment.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `environment` | string | yes | Environment name (e.g. `dev1`, `analytics`) |
-| `database` | string | yes | Database name to query |
-| `query` | string | yes | SQL query — `SELECT`, `SHOW`, `DESCRIBE`, `EXPLAIN` |
-
-**Returns:** JSON object with `columns` (string array) and `rows` (array of string arrays).
-
-**Allowed statements:** `SELECT`, `SHOW` (MySQL), `DESCRIBE` (MySQL), `EXPLAIN`.
-
-**Blocked statements:** `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, and anything that mutates data.
-
-### Jenkins tools
-
-All Jenkins tools require an `environment` parameter matching a key in the `jenkins:` config section.
-
-#### Read tools
-
-| Tool | Key parameters | Description |
-|---|---|---|
-| `jenkins_info` | `environment` | Jenkins version, job count, node count, quiet mode |
-| `jenkins_job_list` | `environment`, `filter?` | List jobs, optional substring filter |
-| `jenkins_job_get` | `environment`, `name` | Job details (status, last build, health) |
-| `jenkins_job_config` | `environment`, `name` | Raw config XML for a job |
-| `jenkins_build_info` | `environment`, `job_name`, `build_number` | Build details (result, duration, parameters) |
-| `jenkins_build_log` | `environment`, `job_name`, `build_number`, `start_line?` | Console log with optional offset |
-| `jenkins_build_artifacts` | `environment`, `job_name`, `build_number` | List build artifacts |
-| `jenkins_node_list` | `environment` | All nodes/agents with online/idle status |
-| `jenkins_queue_list` | `environment` | Current build queue |
-| `jenkins_plugin_list` | `environment` | Installed plugins with versions |
-| `jenkins_view_list` | `environment` | All views with job lists |
-| `jenkins_credential_list` | `environment`, `store?`, `domain?` | Credentials (IDs only, no secrets) |
-
-#### Write / execute tools
-
-> ⚠️ Write tools automatically snapshot the current config before applying changes.
-
-| Tool | Key parameters | Description |
-|---|---|---|
-| `jenkins_job_set_config` | `environment`, `name`, `config_xml` | Update job config XML |
-| `jenkins_job_create` | `environment`, `name`, `config_xml` | Create a new job |
-| `jenkins_job_copy` | `environment`, `from`, `to` | Copy an existing job |
-| `jenkins_job_delete` | `environment`, `name` | Delete a job (snapshots first) |
-| `jenkins_job_enable` | `environment`, `name` | Enable a disabled job |
-| `jenkins_job_disable` | `environment`, `name` | Disable a job |
-| `jenkins_job_build` | `environment`, `name`, `params?` | Trigger a build with optional parameters |
-| `jenkins_build_stop` | `environment`, `job_name`, `build_number` | Stop a running build |
-| `jenkins_queue_cancel` | `environment`, `id` | Cancel a queued item |
-| `jenkins_node_enable` | `environment`, `name` | Bring a node back online |
-| `jenkins_node_disable` | `environment`, `name`, `message?` | Take a node offline |
-| `jenkins_script_console` | `environment`, `script` | Execute Groovy script (Jenkins Script Console) |
-| `jenkins_credential_create` | `environment`, `store`, `domain`, `id`, `config_xml` | Create a credential |
-| `jenkins_credential_delete` | `environment`, `store`, `domain`, `id` | Delete a credential |
-| `jenkins_view_create` | `environment`, `name`, `config_xml` | Create a view |
-| `jenkins_view_delete` | `environment`, `name` | Delete a view |
-
-#### Snapshot / versioning tools
-
-| Tool | Key parameters | Description |
-|---|---|---|
-| `jenkins_snapshot_list` | `environment`, `object_type`, `object_name`, `limit?`, `offset?` | List stored versions |
-| `jenkins_snapshot_get` | `environment`, `object_type`, `object_name`, `version` | Get config XML for a specific version |
-| `jenkins_snapshot_diff` | `environment`, `object_type`, `object_name`, `version_a`, `version_b` | Get both XMLs for comparison |
-| `jenkins_snapshot_restore` | `environment`, `object_type`, `object_name`, `version` | Restore object to a previous version |
-| `jenkins_snapshot_prune` | `environment`, `object_type`, `object_name`, `keep` | Delete old versions, keep newest N |
-
-`object_type` values: `job`, `folder`, `view`, `node`, `credential`.
-
-### Example agent interactions
-
-```
-# SQL
-sql_query(environment="dev1", database="myapp", query="SHOW TABLES")
-sql_query(environment="analytics", database="reporting", query="SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname='public'")
-
-# Jenkins — read
-jenkins_info(environment="production")
-jenkins_job_list(environment="staging", filter="deploy")
-jenkins_build_log(environment="production", job_name="backend-ci", build_number=42)
-
-# Jenkins — write (auto-snapshots before change)
-jenkins_job_set_config(environment="staging", name="my-job", config_xml="<project>...</project>")
-jenkins_job_build(environment="production", name="deploy-app", params={"BRANCH": "main"})
-
-# Jenkins — restore a previous config
-jenkins_snapshot_list(environment="production", object_type="job", object_name="my-job")
-jenkins_snapshot_restore(environment="production", object_type="job", object_name="my-job", version=3)
-```
+| Guide | Includes |
+|---|---|
+| [SQL: MySQL and PostgreSQL](docs/sql.md) | `sql_query` contract, MySQL/PostgreSQL discovery patterns, both read-only protections, and pool limits |
+| [Jenkins](docs/jenkins.md) | All 33 tools, exact parameters, snapshots and restore coverage, large-output distillation, workflows, and security notes |
+| [Go process diagnostics](docs/go-process-diagnostics.md) | Service-side `pprof`/`expvar` snippet, optional `database/sql` metrics, all nine tools, findings, and profiling workflows |
 
 ## Architecture
 
@@ -292,27 +214,30 @@ gaz-mcp/
 ├── cmd/server/              # Entry point
 ├── mcp/
 │   ├── application/
+│   │   ├── diagnostics/     # Go process diagnosis use cases
 │   │   ├── jenkins/         # Jenkins use cases + NoopSnapshotRepository
 │   │   └── sql/             # SQL use case (read-only enforcement)
 │   └── domain/
-│       ├── jenkins/         # Domain ports: Repository + SnapshotRepository
-│       └── sql/             # Domain port: Repository
+│       ├── diagnostics/     # Diagnostic target and profile-store ports
+│       ├── jenkins/         # Repository + SnapshotRepository ports
+│       └── sql/             # Repository port
 ├── platform/
 │   ├── config/              # Viper config reader
 │   ├── di/                  # Dependency injection container
 │   └── mcp/
-│       ├── commands/        # Cobra CLI runner + JenkinsTools wiring
+│       ├── commands/        # Cobra runner + tool wiring
+│       ├── diagnostics/     # HTTP pprof/expvar adapter + profile store
 │       ├── jenkins/         # gojenkins infrastructure adapter
 │       ├── server/          # MCP server wrapper
 │       ├── snapshot/        # SQLite snapshot repository
 │       ├── sql/             # MySQL + PostgreSQL adapters
-│       └── tools/           # MCP tool definitions (sql, jenkins_read/write/snapshot)
+│       └── tools/           # MCP tool definitions
 └── shared/
     ├── ai/domain/           # AI provider contracts
-    └── config/domain/       # Config contracts (EnvironmentConfig, JenkinsEnvironmentConfig, SnapshotConfig)
+    └── config/domain/       # Configuration contracts
 ```
 
-**Dependency rule:** `platform → shared + mcp/application + mcp/domain`. Never reverse.
+**Dependency rule:** `platform → shared + mcp/application + mcp/domain`. Never reverse that direction.
 
 ## Development
 
@@ -322,6 +247,8 @@ go vet ./...                                      # Static analysis
 go test ./...                                     # All tests
 go test ./mcp/application/jenkins/... -v          # Jenkins service unit tests
 go test ./platform/mcp/snapshot/... -v            # SQLite snapshot integration tests
+go test ./mcp/application/diagnostics/... -v      # Diagnostic service tests
+go test ./platform/mcp/diagnostics/... -v         # HTTP adapter and profile-store tests
 ```
 
 ## License

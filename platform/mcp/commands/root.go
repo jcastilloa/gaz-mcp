@@ -22,13 +22,14 @@ type JenkinsTools struct {
 
 // Runner wires the cobra command tree and MCP server.
 type Runner struct {
-	serviceName  string
-	serviceCfg   configDomain.ServiceConfig
-	version      string
-	server       *mcpserver.Server
-	sqlTool      tools.SQLQuery
-	jenkinsTools JenkinsTools
-	hasJenkins   bool
+	serviceName     string
+	serviceCfg      configDomain.ServiceConfig
+	version         string
+	server          *mcpserver.Server
+	sqlTool         tools.SQLQuery
+	diagnosticsTool tools.Diagnostics
+	jenkinsTools    JenkinsTools
+	hasJenkins      bool
 }
 
 func NewRunner(
@@ -37,19 +38,21 @@ func NewRunner(
 	version string,
 	server *mcpserver.Server,
 	sqlTool tools.SQLQuery,
+	diagnosticsTool tools.Diagnostics,
 	jenkinsTools JenkinsTools,
 ) Runner {
 	// hasJenkins is true when at least one Jenkins environment is configured.
 	// We detect this by checking whether the Read tool has any services.
 	hasJenkins := len(jenkinsTools.Read.Services()) > 0
 	return Runner{
-		serviceName:  serviceName,
-		serviceCfg:   serviceCfg,
-		version:      version,
-		server:       server,
-		sqlTool:      sqlTool,
-		jenkinsTools: jenkinsTools,
-		hasJenkins:   hasJenkins,
+		serviceName:     serviceName,
+		serviceCfg:      serviceCfg,
+		version:         version,
+		server:          server,
+		sqlTool:         sqlTool,
+		diagnosticsTool: diagnosticsTool,
+		jenkinsTools:    jenkinsTools,
+		hasJenkins:      hasJenkins,
 	}
 }
 
@@ -80,6 +83,18 @@ func (r Runner) runServer() func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		// --- SQL tool ---
 		r.server.AddTool(r.sqlTool.Definition(), r.sqlTool.Handler)
+
+		// --- Go process diagnostics tools ---
+		diagnostics := r.diagnosticsTool
+		r.server.AddTool(diagnostics.CaptureProfileDefinition(), diagnostics.CaptureProfileHandler)
+		r.server.AddTool(diagnostics.AnalyzeProfileDefinition(), diagnostics.AnalyzeProfileHandler)
+		r.server.AddTool(diagnostics.GenerateFlamegraphDefinition(), diagnostics.GenerateFlamegraphHandler)
+		r.server.AddTool(diagnostics.DiffProfilesDefinition(), diagnostics.DiffProfilesHandler)
+		r.server.AddTool(diagnostics.AnalyzeGoroutinesDefinition(), diagnostics.AnalyzeGoroutinesHandler)
+		r.server.AddTool(diagnostics.GetRuntimeStatsDefinition(), diagnostics.GetRuntimeStatsHandler)
+		r.server.AddTool(diagnostics.GetDBPoolStatsDefinition(), diagnostics.GetDBPoolStatsHandler)
+		r.server.AddTool(diagnostics.GetExpvarsDefinition(), diagnostics.GetExpvarsHandler)
+		r.server.AddTool(diagnostics.DiagnoseDefinition(), diagnostics.DiagnoseHandler)
 
 		// --- Jenkins tools (only when environments are configured) ---
 		if r.hasJenkins {
