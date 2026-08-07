@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const maxResponseBytes = 128 << 20
+const maxResponseBytes = 256 << 20
 
 type Repository struct {
 	client *http.Client

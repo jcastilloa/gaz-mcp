@@ -7,6 +7,13 @@ import (
 	"testing"
 )
 
+func TestResponseSizeLimitIs256MiB(t *testing.T) {
+	const expectedResponseLimit = 256 << 20
+	if maxResponseBytes != expectedResponseLimit {
+		t.Fatalf("response size limit = %d, want %d", maxResponseBytes, expectedResponseLimit)
+	}
+}
+
 func TestRepositoryFetchesExpectedDiagnosticEndpoints(t *testing.T) {
 	requests := make([]string, 0, 3)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
