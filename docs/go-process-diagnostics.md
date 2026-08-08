@@ -227,11 +227,14 @@ Diagnostic tools do not modify application data or configuration. Profile
 capture is nevertheless an active operation: it samples the runtime and
 `gc=true` explicitly triggers garbage collection. Tools that accept `target`
 require an absolute `http://` or `https://` base URL; credentials, query, and
-fragment are rejected, while a base path is supported. A valid self-signed
-HTTPS certificate is accepted so it does not block an authorised inspection.
-The result carries a `TLS_SELF_SIGNED_CERTIFICATE` alert with severity `info`;
-it is not a process health finding. Expired certificates, hostname mismatches,
-and non-self-signed untrusted chains remain errors.
+fragment are rejected, while a base path is supported. By default, diagnostics
+accepts a valid HTTPS certificate when its issuer is an unknown private CA, as
+well as a valid self-signed certificate, so development endpoints do not block
+an authorised inspection. Hostname, validity period, and server-auth usage are
+still verified. The result carries a `TLS_UNTRUSTED_PRIVATE_CA` or
+`TLS_SELF_SIGNED_CERTIFICATE` alert with severity `info`; it is not a process
+health finding. Expired, not-yet-valid, hostname-mismatched, and client-only
+certificates remain errors.
 
 | Tool | Parameters | Description |
 |---|---|---|

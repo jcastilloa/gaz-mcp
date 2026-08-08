@@ -20,17 +20,18 @@ import (
 
 const maxResponseBytes = 256 << 20
 
-const selfSignedTLSAlertCode = "TLS_SELF_SIGNED_CERTIFICATE"
+const (
+	selfSignedTLSAlertCode = "TLS_SELF_SIGNED_CERTIFICATE"
+	privateCATLSAlertCode  = "TLS_UNTRUSTED_PRIVATE_CA"
+)
 
 type Repository struct {
-	client           *http.Client
-	selfSignedClient *http.Client
+	client *http.Client
 }
 
 func NewRepository() *Repository {
 	return &Repository{
-		client:           &http.Client{Timeout: 70 * time.Second},
-		selfSignedClient: &http.Client{Timeout: 70 * time.Second, Transport: selfSignedTransport()},
+		client: &http.Client{Timeout: 70 * time.Second},
 	}
 }
 
@@ -76,93 +77,105 @@ func (r *Repository) FetchExpvars(ctx context.Context, target string) (domain.Fe
 }
 
 func (r *Repository) fetch(ctx context.Context, endpoint string) (domain.FetchResult, error) {
-	data, err := r.fetchWithClient(ctx, r.client, endpoint)
+	data, _, err := r.fetchWithClient(ctx, r.client, endpoint)
 	if err == nil || !isUnknownAuthority(err) {
 		return domain.FetchResult{Data: data}, err
 	}
 
-	data, err = r.fetchWithClient(ctx, r.selfSignedClient, endpoint)
+	untrustedClient, err := untrustedTLSClient(endpoint)
 	if err != nil {
 		return domain.FetchResult{}, err
 	}
+	defer untrustedClient.CloseIdleConnections()
+	data, state, err := r.fetchWithClient(ctx, untrustedClient, endpoint)
+	if err != nil {
+		return domain.FetchResult{}, err
+	}
+	alert := untrustedTLSAlert(state)
 	return domain.FetchResult{
-		Data: data,
-		Alerts: []domain.InspectionAlert{{
-			Code:        selfSignedTLSAlertCode,
-			Severity:    "info",
-			Description: "Accepted a valid self-signed HTTPS certificate for this inspection; this is not a process health finding.",
-		}},
+		Data:   data,
+		Alerts: []domain.InspectionAlert{alert},
 	}, nil
 }
 
-func (r *Repository) fetchWithClient(ctx context.Context, client *http.Client, endpoint string) ([]byte, error) {
+func (r *Repository) fetchWithClient(ctx context.Context, client *http.Client, endpoint string) ([]byte, *tls.ConnectionState, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("GET %s: unexpected HTTP status %s", endpoint, response.Status)
+		return nil, response.TLS, fmt.Errorf("GET %s: unexpected HTTP status %s", endpoint, response.Status)
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
-		return nil, err
+		return nil, response.TLS, err
 	}
 	if len(data) > maxResponseBytes {
-		return nil, fmt.Errorf("GET %s: response exceeds %d bytes", endpoint, maxResponseBytes)
+		return nil, response.TLS, fmt.Errorf("GET %s: response exceeds %d bytes", endpoint, maxResponseBytes)
 	}
-	return data, nil
+	return data, response.TLS, nil
 }
 
-func selfSignedTransport() *http.Transport {
+func untrustedTLSClient(endpoint string) (*http.Client, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	hostname := parsed.Hostname()
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{ //nolint:gosec
 		InsecureSkipVerify: true,
-		VerifyConnection:   verifySelfSignedCertificate,
+		VerifyConnection: func(state tls.ConnectionState) error {
+			return verifyUntrustedCertificate(state, hostname)
+		},
 	}
-	return transport
+	return &http.Client{Timeout: 70 * time.Second, Transport: transport}, nil
 }
 
-func verifySelfSignedCertificate(state tls.ConnectionState) error {
+func verifyUntrustedCertificate(state tls.ConnectionState, hostname string) error {
 	if len(state.PeerCertificates) == 0 {
 		return errors.New("TLS server did not provide a certificate")
 	}
-	certificate := state.PeerCertificates[0]
-	if !isSelfSigned(certificate) {
-		return x509.UnknownAuthorityError{Cert: certificate}
-	}
+	last := len(state.PeerCertificates) - 1
 	roots := x509.NewCertPool()
-	roots.AddCert(certificate)
-	_, err := certificate.Verify(x509.VerifyOptions{
-		DNSName:       state.ServerName,
+	roots.AddCert(state.PeerCertificates[last])
+	intermediates := x509.NewCertPool()
+	for index := 1; index < last; index++ {
+		intermediates.AddCert(state.PeerCertificates[index])
+	}
+	_, err := state.PeerCertificates[0].Verify(x509.VerifyOptions{
+		DNSName:       hostname,
 		Roots:         roots,
-		Intermediates: certificatePool(state.PeerCertificates[1:]),
+		Intermediates: intermediates,
 		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	})
 	return err
 }
 
-func isSelfSigned(certificate *x509.Certificate) bool {
-	return bytes.Equal(certificate.RawSubject, certificate.RawIssuer) && certificate.CheckSignatureFrom(certificate) == nil
+func untrustedTLSAlert(state *tls.ConnectionState) domain.InspectionAlert {
+	alert := domain.InspectionAlert{
+		Code:        privateCATLSAlertCode,
+		Severity:    "info",
+		Description: "Accepted a valid HTTPS certificate issued by an untrusted private CA for this inspection; this is not a process health finding.",
+	}
+	if state != nil && len(state.PeerCertificates) > 0 && isSelfSigned(state.PeerCertificates[0]) {
+		alert.Code = selfSignedTLSAlertCode
+		alert.Description = "Accepted a valid self-signed HTTPS certificate for this inspection; this is not a process health finding."
+	}
+	return alert
 }
 
-func certificatePool(certificates []*x509.Certificate) *x509.CertPool {
-	pool := x509.NewCertPool()
-	for _, certificate := range certificates {
-		pool.AddCert(certificate)
-	}
-	return pool
+func isSelfSigned(certificate *x509.Certificate) bool {
+	return bytes.Equal(certificate.RawSubject, certificate.RawIssuer) &&
+		certificate.CheckSignature(certificate.SignatureAlgorithm, certificate.RawTBSCertificate, certificate.Signature) == nil
 }
 
 func isUnknownAuthority(err error) bool {
-	var verificationError *tls.CertificateVerificationError
-	if errors.As(err, &verificationError) {
-		return true
-	}
 	var unknownAuthority x509.UnknownAuthorityError
 	return errors.As(err, &unknownAuthority)
 }

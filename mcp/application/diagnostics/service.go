@@ -159,7 +159,7 @@ func (s Service) Diagnose(ctx context.Context, target string) (DiagnosisReport, 
 		goroutines = GoroutineReport{Groups: []GoroutineGroup{}}
 		availabilityAlerts = append(availabilityAlerts, domain.InspectionAlert{
 			Code: "GOROUTINES_UNAVAILABLE", Severity: "info",
-			Description: "The target goroutine profile could not be read; stack-based suspicions are unavailable.",
+			Description: fmt.Sprintf("The target goroutine profile could not be read; stack-based suspicions are unavailable: %v", err),
 		})
 	}
 	beforeVars, beforeAlerts, err := s.GetExpvarsWithAlerts(ctx, target)
@@ -174,7 +174,7 @@ func (s Service) Diagnose(ctx context.Context, target string) (DiagnosisReport, 
 		report.Alerts = uniqueAlerts(goroutines.Alerts, availabilityAlerts, []domain.InspectionAlert{{
 			Code:        "METRICS_UNAVAILABLE",
 			Severity:    "info",
-			Description: "The target /debug/vars endpoint could not be read; metric-based suspicions are unavailable.",
+			Description: fmt.Sprintf("The target /debug/vars endpoint could not be read; metric-based suspicions are unavailable: %v", err),
 		}})
 		report.Goroutines.Alerts = nil
 		return report, nil
@@ -192,7 +192,7 @@ func (s Service) Diagnose(ctx context.Context, target string) (DiagnosisReport, 
 		afterAlerts = append(afterAlerts, domain.InspectionAlert{
 			Code:        "METRIC_SECOND_SAMPLE_UNAVAILABLE",
 			Severity:    "info",
-			Description: "The second metric sample could not be read; the first sample was reused and rate-based suspicions were skipped.",
+			Description: fmt.Sprintf("The second metric sample could not be read; the first sample was reused and rate-based suspicions were skipped: %v", err),
 		})
 		report := DiagnosisReport{Goroutines: goroutines, Metrics: metricWindow(before, after)}
 		report.Suspicions = analyzeMetricSnapshots(before, after, goroutines)

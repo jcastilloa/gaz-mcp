@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,6 +144,25 @@ func TestServiceDiagnoseKeepsMetricEvidenceWhenGoroutinesAreUnavailable(t *testi
 	if !hasAlert(report.Alerts, "GOROUTINES_UNAVAILABLE") {
 		t.Fatalf("alerts = %#v, want goroutine availability alert", report.Alerts)
 	}
+	if description := alertDescription(report.Alerts, "GOROUTINES_UNAVAILABLE"); !strings.Contains(description, "goroutine endpoint unavailable") {
+		t.Fatalf("alert description = %q, want original endpoint error", description)
+	}
+}
+
+func TestServiceDiagnoseReportsMetricParsingFailure(t *testing.T) {
+	service := NewService(fakeTargetRepository{
+		goroutines: []byte("goroutine 1 [running]:\nmain.main()\n\t/srv/main.go:1\n"),
+		expvars:    []byte("<html>application fallback</html>"),
+	}, memoryProfileStore{})
+
+	report, err := service.Diagnose(context.Background(), "https://service.test")
+	if err != nil {
+		t.Fatalf("diagnose: %v", err)
+	}
+	description := alertDescription(report.Alerts, "METRICS_UNAVAILABLE")
+	if !strings.Contains(description, "invalid character '<'") {
+		t.Fatalf("alert description = %q, want JSON parsing cause", description)
+	}
 }
 
 func TestServiceDiagnoseDeduplicatesInformationalInspectionAlerts(t *testing.T) {
@@ -203,6 +223,15 @@ func hasAlert(alerts []domain.InspectionAlert, code string) bool {
 		}
 	}
 	return false
+}
+
+func alertDescription(alerts []domain.InspectionAlert, code string) string {
+	for _, alert := range alerts {
+		if alert.Code == code {
+			return alert.Description
+		}
+	}
+	return ""
 }
 
 func (r *sequenceTargetRepository) FetchProfile(context.Context, domain.ProfileRequest) (domain.FetchResult, error) {

@@ -64,6 +64,7 @@ Block and mutex profiles can be empty unless runtime sampling was enabled in the
 ## Operational rules
 
 - Diagnostic endpoints can expose internals. Use only authorised targets and do not reproduce sensitive expvars unnecessarily.
+- HTTPS targets with a valid self-signed certificate or a certificate issued by an unknown private CA are accepted by default. Treat the informational TLS alert as transport context, not a process-health suspicion; hostname, validity, and server-auth usage are still checked.
 - Profile IDs reference files local to the gaz-mcp process and are temporary, not portable artifacts.
 - Profile capture is active on the target; interval profiles sample the runtime and `gc=true` forces garbage collection. Avoid repeated or unnecessarily long captures.
 - Report the raw evidence, the heuristic interpretation, and remaining uncertainty separately.
