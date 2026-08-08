@@ -18,8 +18,9 @@ const (
 )
 
 type GoroutineReport struct {
-	Total  int              `json:"total"`
-	Groups []GoroutineGroup `json:"groups"`
+	Total  int                      `json:"total"`
+	Groups []GoroutineGroup         `json:"groups"`
+	Alerts []domain.InspectionAlert `json:"alerts,omitempty"`
 }
 
 type GoroutineGroup struct {
@@ -38,16 +39,17 @@ type Finding struct {
 }
 
 type RuntimeStats struct {
-	Available       bool          `json:"available"`
-	GoroutineSource string        `json:"goroutine_source,omitempty"`
-	Goroutines      int           `json:"goroutines,omitempty"`
-	Threads         int           `json:"threads,omitempty"`
-	HeapAlloc       uint64        `json:"heap_alloc_bytes,omitempty"`
-	HeapSys         uint64        `json:"heap_sys_bytes,omitempty"`
-	NumGC           uint32        `json:"num_gc,omitempty"`
-	PauseTotal      time.Duration `json:"pause_total_ns,omitempty"`
-	LastGC          time.Time     `json:"last_gc,omitempty"`
-	Instrumentation string        `json:"instrumentation,omitempty"`
+	Available       bool                     `json:"available"`
+	GoroutineSource string                   `json:"goroutine_source,omitempty"`
+	Goroutines      int                      `json:"goroutines,omitempty"`
+	Threads         int                      `json:"threads,omitempty"`
+	HeapAlloc       uint64                   `json:"heap_alloc_bytes,omitempty"`
+	HeapSys         uint64                   `json:"heap_sys_bytes,omitempty"`
+	NumGC           uint32                   `json:"num_gc,omitempty"`
+	PauseTotal      time.Duration            `json:"pause_total_ns,omitempty"`
+	LastGC          time.Time                `json:"last_gc,omitempty"`
+	Instrumentation string                   `json:"instrumentation,omitempty"`
+	Alerts          []domain.InspectionAlert `json:"alerts,omitempty"`
 }
 
 type DBPoolStats struct {
@@ -64,10 +66,11 @@ type DBPoolStats struct {
 }
 
 type DiagnosisReport struct {
-	Runtime     RuntimeStats    `json:"runtime"`
-	Goroutines  GoroutineReport `json:"goroutines"`
-	DBPools     []DBPoolStats   `json:"db_pools,omitempty"`
-	Conclusions []Conclusion    `json:"conclusions,omitempty"`
+	Runtime     RuntimeStats             `json:"runtime"`
+	Goroutines  GoroutineReport          `json:"goroutines"`
+	DBPools     []DBPoolStats            `json:"db_pools,omitempty"`
+	Conclusions []Conclusion             `json:"conclusions,omitempty"`
+	Alerts      []domain.InspectionAlert `json:"alerts,omitempty"`
 }
 
 type Conclusion struct {

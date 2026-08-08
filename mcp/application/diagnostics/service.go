@@ -37,11 +37,11 @@ func (s Service) CaptureProfile(ctx context.Context, target, profileType string,
 	if err != nil {
 		return domain.ProfileMetadata{}, err
 	}
-	data, err := s.targets.FetchProfile(ctx, target, profileType, seconds)
+	result, err := s.targets.FetchProfile(ctx, target, profileType, seconds)
 	if err != nil {
 		return domain.ProfileMetadata{}, fmt.Errorf("fetch profile: %w", err)
 	}
-	return s.profiles.Save(ctx, domain.CapturedProfile{Metadata: domain.ProfileMetadata{Target: target, Type: profileType, CapturedAt: time.Now().UTC()}, Data: data})
+	return s.profiles.Save(ctx, domain.CapturedProfile{Metadata: domain.ProfileMetadata{Target: target, Type: profileType, CapturedAt: time.Now().UTC(), Alerts: result.Alerts}, Data: result.Data})
 }
 
 func (s Service) AnalyzeProfile(ctx context.Context, id string, topN int) (ProfileAnalysis, error) {
@@ -86,35 +86,56 @@ func (s Service) DiffProfiles(ctx context.Context, idA, idB string, topN int) (P
 }
 
 func (s Service) AnalyzeGoroutines(ctx context.Context, target string) (GoroutineReport, error) {
-	dump, err := s.targets.FetchGoroutines(ctx, target)
+	result, err := s.targets.FetchGoroutines(ctx, target)
 	if err != nil {
 		return GoroutineReport{}, fmt.Errorf("fetch goroutines: %w", err)
 	}
-	return AnalyzeGoroutines(string(dump))
+	report, err := AnalyzeGoroutines(string(result.Data))
+	if err != nil {
+		return GoroutineReport{}, err
+	}
+	report.Alerts = result.Alerts
+	return report, nil
 }
 
 func (s Service) GetExpvars(ctx context.Context, target string) (map[string]any, error) {
-	data, err := s.targets.FetchExpvars(ctx, target)
+	vars, _, err := s.GetExpvarsWithAlerts(ctx, target)
+	return vars, err
+}
+
+func (s Service) GetExpvarsWithAlerts(ctx context.Context, target string) (map[string]any, []domain.InspectionAlert, error) {
+	result, err := s.targets.FetchExpvars(ctx, target)
 	if err != nil {
-		return nil, fmt.Errorf("fetch expvars: %w", err)
+		return nil, nil, fmt.Errorf("fetch expvars: %w", err)
 	}
-	return parseExpvars(data)
+	vars, err := parseExpvars(result.Data)
+	if err != nil {
+		return nil, nil, err
+	}
+	return vars, result.Alerts, nil
 }
 
 func (s Service) GetRuntimeStats(ctx context.Context, target string) (RuntimeStats, error) {
-	vars, err := s.GetExpvars(ctx, target)
+	vars, alerts, err := s.GetExpvarsWithAlerts(ctx, target)
 	if err != nil {
 		return RuntimeStats{}, err
 	}
-	return runtimeStatsFromExpvars(vars), nil
+	stats := runtimeStatsFromExpvars(vars)
+	stats.Alerts = alerts
+	return stats, nil
 }
 
 func (s Service) GetDBPoolStats(ctx context.Context, target string) ([]DBPoolStats, error) {
-	vars, err := s.GetExpvars(ctx, target)
+	pools, _, err := s.GetDBPoolStatsWithAlerts(ctx, target)
+	return pools, err
+}
+
+func (s Service) GetDBPoolStatsWithAlerts(ctx context.Context, target string) ([]DBPoolStats, []domain.InspectionAlert, error) {
+	vars, alerts, err := s.GetExpvarsWithAlerts(ctx, target)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return dbPoolStatsFromExpvars(vars), nil
+	return dbPoolStatsFromExpvars(vars), alerts, nil
 }
 
 func (s Service) Diagnose(ctx context.Context, target string) (DiagnosisReport, error) {
@@ -122,16 +143,38 @@ func (s Service) Diagnose(ctx context.Context, target string) (DiagnosisReport, 
 	if err != nil {
 		return DiagnosisReport{}, err
 	}
-	vars, err := s.GetExpvars(ctx, target)
+	vars, alerts, err := s.GetExpvarsWithAlerts(ctx, target)
 	if err != nil {
-		return BuildDiagnosis(RuntimeStats{Instrumentation: "unavailable: /debug/vars could not be read"}, goroutines, nil), nil
+		report := BuildDiagnosis(RuntimeStats{Instrumentation: "unavailable: /debug/vars could not be read"}, goroutines, nil)
+		report.Alerts = goroutines.Alerts
+		report.Goroutines.Alerts = nil
+		return report, nil
 	}
 	runtime := runtimeStatsFromExpvars(vars)
 	if runtime.GoroutineSource == "" {
 		runtime.Goroutines = goroutines.Total
 		runtime.GoroutineSource = "goroutine_dump"
 	}
-	return BuildDiagnosis(runtime, goroutines, dbPoolStatsFromExpvars(vars)), nil
+	report := BuildDiagnosis(runtime, goroutines, dbPoolStatsFromExpvars(vars))
+	report.Alerts = uniqueAlerts(goroutines.Alerts, alerts)
+	report.Goroutines.Alerts = nil
+	return report, nil
+}
+
+func uniqueAlerts(alertGroups ...[]domain.InspectionAlert) []domain.InspectionAlert {
+	seen := make(map[string]struct{})
+	var alerts []domain.InspectionAlert
+	for _, group := range alertGroups {
+		for _, alert := range group {
+			key := alert.Code + "\x00" + alert.Description
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			alerts = append(alerts, alert)
+		}
+	}
+	return alerts
 }
 
 type loadedProfile struct {

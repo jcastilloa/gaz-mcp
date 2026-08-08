@@ -3,10 +3,12 @@ package tools
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	diagnosticsApp "github.com/jcastillo/gaz-mcp/mcp/application/diagnostics"
+	diagnosticsDomain "github.com/jcastillo/gaz-mcp/mcp/domain/diagnostics"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -15,7 +17,8 @@ type Diagnostics struct {
 }
 
 type dbPoolStatsResult struct {
-	Pools []diagnosticsApp.DBPoolStats `json:"pools"`
+	Pools  []diagnosticsApp.DBPoolStats        `json:"pools"`
+	Alerts []diagnosticsDomain.InspectionAlert `json:"alerts,omitempty"`
 }
 
 func NewDiagnostics(service diagnosticsApp.Service) Diagnostics {
@@ -165,14 +168,14 @@ func (d Diagnostics) GetDBPoolStatsHandler(ctx context.Context, request mcp.Call
 	if result != nil {
 		return result, nil
 	}
-	pools, err := d.service.GetDBPoolStats(ctx, target)
+	pools, alerts, err := d.service.GetDBPoolStatsWithAlerts(ctx, target)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("get DB pool stats: %v", err)), nil
 	}
 	if pools == nil {
 		pools = []diagnosticsApp.DBPoolStats{}
 	}
-	return jsonToolResult(dbPoolStatsResult{Pools: pools})
+	return jsonToolResult(dbPoolStatsResult{Pools: pools, Alerts: alerts})
 }
 
 func (d Diagnostics) GetExpvarsDefinition() mcp.Tool {
@@ -188,11 +191,11 @@ func (d Diagnostics) GetExpvarsHandler(ctx context.Context, request mcp.CallTool
 	if result != nil {
 		return result, nil
 	}
-	vars, err := d.service.GetExpvars(ctx, target)
+	vars, alerts, err := d.service.GetExpvarsWithAlerts(ctx, target)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("get expvars: %v", err)), nil
 	}
-	return jsonToolResult(vars)
+	return expvarsToolResult(vars, alerts)
 }
 
 func (d Diagnostics) DiagnoseDefinition() mcp.Tool {
@@ -259,4 +262,17 @@ func topN(request mcp.CallToolRequest) int {
 
 func jsonToolResult(value any) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultJSON(value)
+}
+
+func expvarsToolResult(vars map[string]any, alerts []diagnosticsDomain.InspectionAlert) (*mcp.CallToolResult, error) {
+	result, err := jsonToolResult(vars)
+	if err != nil || len(alerts) == 0 {
+		return result, err
+	}
+	alertData, err := json.Marshal(alerts)
+	if err != nil {
+		return nil, err
+	}
+	result.Content = append(result.Content, mcp.NewTextContent(string(alertData)))
+	return result, nil
 }

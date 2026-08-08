@@ -196,7 +196,7 @@ The MCP recognises the field names shown above. Additional fields and arbitrary 
 
 ## Tool reference
 
-All diagnostic tools are read-only from the target's perspective. Tools that accept `target` require an absolute `http://` or `https://` base URL; a base path is supported and the appropriate `/debug/...` suffix is appended.
+All diagnostic tools are read-only from the target's perspective. Tools that accept `target` require an absolute `http://` or `https://` base URL; a base path is supported and the appropriate `/debug/...` suffix is appended. A valid self-signed HTTPS certificate is accepted so it does not block an authorised inspection. The result carries a `TLS_SELF_SIGNED_CERTIFICATE` alert with severity `info`; it is not a process health finding. Expired certificates, hostname mismatches, and non-self-signed untrusted chains remain errors.
 
 | Tool | Parameters | Description |
 |---|---|---|

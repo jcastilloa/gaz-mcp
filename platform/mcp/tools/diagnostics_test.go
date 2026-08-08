@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	diagnosticsApp "github.com/jcastillo/gaz-mcp/mcp/application/diagnostics"
@@ -57,6 +58,31 @@ func TestGetDBPoolStatsReturnsEmptyPoolsArray(t *testing.T) {
 	assertStructuredContentIsObject(t, result, 0)
 }
 
+func TestGetExpvarsIncludesInformationalInspectionAlert(t *testing.T) {
+	alerts := []diagnosticsDomain.InspectionAlert{{Code: "TLS_SELF_SIGNED_CERTIFICATE", Severity: "info"}}
+	service := diagnosticsApp.NewService(toolTargetRepository{expvars: []byte(`{"num_goroutine":1}`), alerts: alerts}, toolProfileStore{})
+
+	result, err := NewDiagnostics(service).GetExpvarsHandler(context.Background(), toolRequest("https://service:6060"))
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	content, ok := result.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("structured content type = %T, want map[string]any", result.StructuredContent)
+	}
+	value, ok := content["num_goroutine"].(json.Number)
+	if !ok || value.String() != "1" {
+		t.Fatalf("expvars = %#v, want num_goroutine", content)
+	}
+	if len(result.Content) != 2 {
+		t.Fatalf("content length = %d, want expvars plus one informational alert", len(result.Content))
+	}
+	alertText, ok := result.Content[1].(mcp.TextContent)
+	if !ok || !strings.Contains(alertText.Text, `"severity":"info"`) {
+		t.Fatalf("alert content = %#v, want informational alert", result.Content[1])
+	}
+}
+
 func assertStructuredContentIsObject(t *testing.T, result *mcp.CallToolResult, poolCount int) {
 	t.Helper()
 	data, err := json.Marshal(result)
@@ -92,18 +118,19 @@ func toolRequest(target string) mcp.CallToolRequest {
 
 type toolTargetRepository struct {
 	expvars []byte
+	alerts  []diagnosticsDomain.InspectionAlert
 }
 
-func (repository toolTargetRepository) FetchProfile(context.Context, string, string, int) ([]byte, error) {
-	return nil, nil
+func (repository toolTargetRepository) FetchProfile(context.Context, string, string, int) (diagnosticsDomain.FetchResult, error) {
+	return diagnosticsDomain.FetchResult{}, nil
 }
 
-func (repository toolTargetRepository) FetchGoroutines(context.Context, string) ([]byte, error) {
-	return nil, nil
+func (repository toolTargetRepository) FetchGoroutines(context.Context, string) (diagnosticsDomain.FetchResult, error) {
+	return diagnosticsDomain.FetchResult{}, nil
 }
 
-func (repository toolTargetRepository) FetchExpvars(context.Context, string) ([]byte, error) {
-	return repository.expvars, nil
+func (repository toolTargetRepository) FetchExpvars(context.Context, string) (diagnosticsDomain.FetchResult, error) {
+	return diagnosticsDomain.FetchResult{Data: repository.expvars, Alerts: repository.alerts}, nil
 }
 
 type toolProfileStore struct{}

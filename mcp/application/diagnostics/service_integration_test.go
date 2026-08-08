@@ -33,22 +33,48 @@ func TestServiceDiagnoseReturnsConfirmedPoolExhaustion(t *testing.T) {
 	}
 }
 
+func TestServiceDiagnoseDeduplicatesInformationalInspectionAlerts(t *testing.T) {
+	alert := domain.InspectionAlert{Code: "TLS_SELF_SIGNED_CERTIFICATE", Severity: "info"}
+	service := NewService(fakeTargetRepository{
+		goroutines:      []byte("goroutine 1 [running]:\nmain.main()\n\t/srv/main.go:1\n"),
+		expvars:         []byte(`{"num_goroutine":1}`),
+		goroutineAlerts: []domain.InspectionAlert{alert},
+		expvarAlerts:    []domain.InspectionAlert{alert},
+	}, memoryProfileStore{})
+
+	report, err := service.Diagnose(context.Background(), "https://service:6060")
+	if err != nil {
+		t.Fatalf("diagnose: %v", err)
+	}
+	if len(report.Alerts) != 1 || report.Alerts[0].Code != alert.Code || report.Alerts[0].Severity != "info" {
+		t.Fatalf("alerts = %#v, want one informational TLS alert", report.Alerts)
+	}
+	if len(report.Goroutines.Alerts) != 0 || len(report.Runtime.Alerts) != 0 {
+		t.Fatalf("nested alerts = goroutines %#v, runtime %#v, want only the top-level alert", report.Goroutines.Alerts, report.Runtime.Alerts)
+	}
+	if len(report.Conclusions) != 0 {
+		t.Fatalf("conclusions = %#v, want no TLS health conclusion", report.Conclusions)
+	}
+}
+
 type fakeTargetRepository struct {
-	profiles   []byte
-	goroutines []byte
-	expvars    []byte
+	profiles        []byte
+	goroutines      []byte
+	expvars         []byte
+	goroutineAlerts []domain.InspectionAlert
+	expvarAlerts    []domain.InspectionAlert
 }
 
-func (r fakeTargetRepository) FetchProfile(_ context.Context, _, _ string, _ int) ([]byte, error) {
-	return r.profiles, nil
+func (r fakeTargetRepository) FetchProfile(_ context.Context, _, _ string, _ int) (domain.FetchResult, error) {
+	return domain.FetchResult{Data: r.profiles}, nil
 }
 
-func (r fakeTargetRepository) FetchGoroutines(_ context.Context, _ string) ([]byte, error) {
-	return r.goroutines, nil
+func (r fakeTargetRepository) FetchGoroutines(_ context.Context, _ string) (domain.FetchResult, error) {
+	return domain.FetchResult{Data: r.goroutines, Alerts: r.goroutineAlerts}, nil
 }
 
-func (r fakeTargetRepository) FetchExpvars(_ context.Context, _ string) ([]byte, error) {
-	return r.expvars, nil
+func (r fakeTargetRepository) FetchExpvars(_ context.Context, _ string) (domain.FetchResult, error) {
+	return domain.FetchResult{Data: r.expvars, Alerts: r.expvarAlerts}, nil
 }
 
 type memoryProfileStore struct{}
