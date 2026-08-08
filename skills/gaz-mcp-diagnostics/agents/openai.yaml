@@ -1,4 +1,4 @@
 interface:
   display_name: "gaz-mcp Diagnostics"
-  short_description: "Diagnose Go processes with pprof and expvar"
-  default_prompt: "Use $gaz-mcp-diagnostics to investigate this Go process using metrics and evidence-backed suspicions."
+  short_description: "Instrument and diagnose Go processes"
+  default_prompt: "Use $gaz-mcp-diagnostics to instrument or investigate this Go service with raw metrics and evidence-backed suspicions."

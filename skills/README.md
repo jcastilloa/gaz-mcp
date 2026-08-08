@@ -6,7 +6,7 @@ This directory contains the skills intended for agents that use a running `gaz-m
 |---|---|
 | [`gaz-mcp-db`](gaz-mcp-db/SKILL.md) | Read-only MySQL and PostgreSQL inspection through `sql_query` |
 | [`gaz-mcp-jenkins`](gaz-mcp-jenkins/SKILL.md) | Jenkins inspection, administration, snapshots, and large-output handling |
-| [`gaz-mcp-diagnostics`](gaz-mcp-diagnostics/SKILL.md) | Go process diagnosis with pprof, expvar, metrics, and heuristic suspicions |
+| [`gaz-mcp-diagnostics`](gaz-mcp-diagnostics/SKILL.md) | Go service instrumentation and process diagnosis with pprof, expvar, metrics, and heuristic suspicions |
 
 Each skill is concise and self-contained: `SKILL.md` contains the operating knowledge required by the agent and does not depend on this README or the product manuals. `agents/openai.yaml` supplies optional UI metadata for clients that support it.
 

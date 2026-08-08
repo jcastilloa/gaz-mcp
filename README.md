@@ -68,7 +68,7 @@ Product-facing agent skills are distributed under [`skills/`](skills/), separate
 |---|---|
 | [`gaz-mcp-db`](skills/gaz-mcp-db/SKILL.md) | Read-only MySQL and PostgreSQL inspection |
 | [`gaz-mcp-jenkins`](skills/gaz-mcp-jenkins/SKILL.md) | Jenkins operations and configuration history |
-| [`gaz-mcp-diagnostics`](skills/gaz-mcp-diagnostics/SKILL.md) | Go pprof, expvar, metrics, and diagnostic suspicions |
+| [`gaz-mcp-diagnostics`](skills/gaz-mcp-diagnostics/SKILL.md) | Go service instrumentation, pprof, expvar, metrics, and diagnostic suspicions |
 
 Install the complete directory for every enabled capability. For example, from a gaz-mcp checkout, copy them into a separate project that consumes the MCP:
 

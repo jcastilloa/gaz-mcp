@@ -1,11 +1,65 @@
 ---
 name: gaz-mcp-diagnostics
-description: Diagnose running Go processes through gaz-mcp using pprof profiles, flame graphs, grouped goroutine stacks, expvar metrics, database/sql pool statistics, and evidence-backed heuristic suspicions. Use when investigating Go CPU, memory, allocation, contention, goroutine, file-descriptor, scheduler, cgroup, host-resource, or SQL-pool problems through a target exposing /debug/pprof and optionally /debug/vars.
+description: Instrument and diagnose Go processes with the gaz-mcp diagnostics module and MCP tools, including pprof profiles, flame graphs, grouped goroutine stacks, expvar metrics, database/sql pool statistics, and evidence-backed heuristic suspicions. Use when adding diagnostics endpoints to a Go service or investigating CPU, memory, allocation, contention, goroutine, file-descriptor, scheduler, cgroup, host-resource, or SQL-pool problems.
 ---
 
 # gaz-mcp Go diagnostics
 
-Inspect a Go process through its absolute `target` URL. The target must expose `/debug/pprof`; metrics require `/debug/vars`.
+Instrument a Go service with the standalone diagnostics module, then inspect it through its absolute `target` URL. Profiles require `/debug/pprof`; metrics require `/debug/vars`.
+
+## Instrument the target service
+
+Install the independent Go module in the service repository:
+
+```bash
+go get github.com/jcastilloa/gaz-mcp/diagnostics@latest
+```
+
+The module requires Go 1.26 or newer. Confirm the service toolchain before adding it.
+
+Register it on the service's dedicated `http.ServeMux`. Runtime, process, host, and cgroup facts are published automatically; do not recreate them as custom expvars.
+
+```go
+import (
+	"database/sql"
+	"expvar"
+	"net/http"
+
+	"github.com/jcastilloa/gaz-mcp/diagnostics"
+)
+
+func registerDiagnostics(mux *http.ServeMux, db *sql.DB, queueDepth func() int) error {
+	return diagnostics.Register(mux,
+		diagnostics.WithDBPool("primary", db),
+		diagnostics.WithCustomVars(func(vars *expvar.Map) {
+			vars.Set("queue_depth", expvar.Func(func() any { return queueDepth() }))
+		}),
+	)
+}
+```
+
+Adapt the options to the service:
+
+- Omit `WithDBPool` when there is no `*sql.DB`; register each relevant pool under a unique stable name.
+- Use `WithCustomVars` only for cheap, read-only, application-specific values. They appear below `gaz_diagnostics.custom`.
+- Enable block and mutex sampling only when needed with `WithBlockProfileRate(time.Millisecond)` and `WithMutexProfileFraction(5)`. Both options change process-wide runtime settings and add overhead.
+- Add `WithMiddleware` and/or `WithIPAllowlist` when the endpoints are not already protected by a trusted internal proxy or router.
+- Use `Handler(options...)` instead of `Register` when the framework mounts an `http.Handler`; expose both `/debug/pprof` (including its subpaths) and `/debug/vars`.
+- Propagate registration errors during startup, or use `MustRegister`/`MustHandler` when invalid diagnostics configuration must stop the process.
+- Never serve `http.DefaultServeMux`; the module intentionally requires an explicit protected mux or handler.
+
+By default, tell gaz-mcp to use the service origin as `target`, for example `https://orders.internal`. With `WithBasePath("/internal/diagnostics")`, use `target="https://orders.internal/internal/diagnostics"`; gaz-mcp appends `/debug/...` itself.
+
+Verify the integration before diagnosing:
+
+```bash
+curl --fail --show-error https://orders.internal/debug/vars
+curl --fail --show-error 'https://orders.internal/debug/pprof/goroutine?debug=2'
+```
+
+Expect JSON containing `gaz_diagnostics` from the first request and a goroutine dump from the second. An HTTP 200 containing application HTML usually means a reverse proxy or SPA fallback is swallowing `/debug/*`; fix routing or use the backend service origin.
+
+Keep the boundary clear: the service-side module publishes raw observations. It does not apply thresholds or emit health conclusions; gaz-mcp creates separate, reviewable suspicions from the observations.
 
 ## Choose the first tool
 

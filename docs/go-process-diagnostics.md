@@ -18,7 +18,7 @@ This repository includes an independent Go module at
 dependencies, so a service can import only the instrumentation it needs:
 
 ```bash
-go get github.com/jcastilloa/gaz-mcp/diagnostics@v0.1.0
+go get github.com/jcastilloa/gaz-mcp/diagnostics@latest
 ```
 
 Use a dedicated mux and register everything with one call. The default paths

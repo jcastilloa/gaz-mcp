@@ -6,7 +6,7 @@ controls. It has no MCP,
 Jenkins, or database-driver dependencies.
 
 ```bash
-go get github.com/jcastilloa/gaz-mcp/diagnostics@v0.1.0
+go get github.com/jcastilloa/gaz-mcp/diagnostics@latest
 ```
 
 Register it on a dedicated mux:
