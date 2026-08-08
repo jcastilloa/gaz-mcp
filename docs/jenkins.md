@@ -3,6 +3,7 @@
 `gaz-mcp` exposes Jenkins inspection, administration, and configuration-history tools for each configured Jenkins environment. There are 33 Jenkins tools: 12 read tools, 16 write or execution tools, and 5 snapshot tools.
 
 For installation, client registration, and shared configuration, see the [root README](../README.md).
+Agents operating Jenkins can install the self-contained [`gaz-mcp-jenkins` skill](../skills/gaz-mcp-jenkins/SKILL.md).
 
 ## Configuration
 

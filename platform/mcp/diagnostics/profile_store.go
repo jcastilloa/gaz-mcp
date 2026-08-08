@@ -13,11 +13,12 @@ import (
 )
 
 type ProfileStore struct {
-	directory string
+	directory     string
+	writeMetadata func(string, []byte) error
 }
 
 func NewProfileStore(directory string) *ProfileStore {
-	return &ProfileStore{directory: directory}
+	return &ProfileStore{directory: directory, writeMetadata: writePrivateFile}
 }
 
 func DefaultProfileDirectory() string {
@@ -28,17 +29,26 @@ func (s *ProfileStore) Save(_ context.Context, profile domain.CapturedProfile) (
 	if err := os.MkdirAll(s.directory, 0o700); err != nil {
 		return domain.ProfileMetadata{}, fmt.Errorf("create profile directory: %w", err)
 	}
+	if err := os.Chmod(s.directory, 0o700); err != nil {
+		return domain.ProfileMetadata{}, fmt.Errorf("secure profile directory: %w", err)
+	}
 	metadata := profile.Metadata
 	metadata.ID = uuid.NewString()
 	metadata.Size = len(profile.Data)
-	if err := os.WriteFile(s.dataPath(metadata.ID), profile.Data, 0o600); err != nil {
+	dataPath := s.dataPath(metadata.ID)
+	if err := writePrivateFile(dataPath, profile.Data); err != nil {
 		return domain.ProfileMetadata{}, fmt.Errorf("write profile data: %w", err)
 	}
 	encoded, err := json.Marshal(metadata)
 	if err != nil {
 		return domain.ProfileMetadata{}, fmt.Errorf("marshal profile metadata: %w", err)
 	}
-	if err := os.WriteFile(s.metadataPath(metadata.ID), encoded, 0o600); err != nil {
+	writeMetadata := s.writeMetadata
+	if writeMetadata == nil {
+		writeMetadata = writePrivateFile
+	}
+	if err := writeMetadata(s.metadataPath(metadata.ID), encoded); err != nil {
+		_ = os.Remove(dataPath)
 		return domain.ProfileMetadata{}, fmt.Errorf("write profile metadata: %w", err)
 	}
 	return metadata, nil
@@ -66,3 +76,7 @@ func (s *ProfileStore) Load(_ context.Context, id string) (domain.CapturedProfil
 func (s *ProfileStore) dataPath(id string) string { return filepath.Join(s.directory, id+".pprof") }
 
 func (s *ProfileStore) metadataPath(id string) string { return filepath.Join(s.directory, id+".json") }
+
+func writePrivateFile(name string, data []byte) error {
+	return os.WriteFile(name, data, 0o600)
+}

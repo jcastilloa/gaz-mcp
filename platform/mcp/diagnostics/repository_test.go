@@ -26,7 +26,7 @@ func TestRepositoryFetchesExpectedDiagnosticEndpoints(t *testing.T) {
 	defer server.Close()
 
 	repository := NewRepository()
-	if _, err := repository.FetchProfile(context.Background(), server.URL, "cpu", 12); err != nil {
+	if _, err := repository.FetchProfile(context.Background(), domain.ProfileRequest{Target: server.URL, Type: "cpu", Seconds: 12}); err != nil {
 		t.Fatalf("fetch CPU profile: %v", err)
 	}
 	if _, err := repository.FetchGoroutines(context.Background(), server.URL); err != nil {
@@ -40,6 +40,28 @@ func TestRepositoryFetchesExpectedDiagnosticEndpoints(t *testing.T) {
 	for index, uri := range want {
 		if requests[index] != uri {
 			t.Fatalf("request %d = %q, want %q", index, requests[index], uri)
+		}
+	}
+}
+
+func TestRepositoryForwardsDeltaAndHeapGCProfileOptions(t *testing.T) {
+	requests := make([]string, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests = append(requests, request.URL.RequestURI())
+		_, _ = writer.Write([]byte("response"))
+	}))
+	defer server.Close()
+	repository := NewRepository()
+	if _, err := repository.FetchProfile(context.Background(), domain.ProfileRequest{Target: server.URL, Type: "mutex", Seconds: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.FetchProfile(context.Background(), domain.ProfileRequest{Target: server.URL, Type: "heap", ForceGC: true}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/debug/pprof/mutex?seconds=3", "/debug/pprof/heap?gc=1"}
+	for index := range want {
+		if requests[index] != want[index] {
+			t.Errorf("request %d = %q, want %q", index, requests[index], want[index])
 		}
 	}
 }
@@ -73,7 +95,7 @@ func TestRepositoryFetchesAllEndpointsFromSelfSignedHTTPSTarget(t *testing.T) {
 
 	repository := NewRepository()
 	results := make([]domain.FetchResult, 0, 3)
-	profile, err := repository.FetchProfile(context.Background(), server.URL, "heap", 0)
+	profile, err := repository.FetchProfile(context.Background(), domain.ProfileRequest{Target: server.URL, Type: "heap"})
 	if err != nil {
 		t.Fatalf("fetch profile: %v", err)
 	}
@@ -132,6 +154,18 @@ func TestRepositoryRejectsInvalidTarget(t *testing.T) {
 	_, err := NewRepository().FetchExpvars(context.Background(), "service:6060")
 	if err == nil {
 		t.Fatal("expected an invalid target error")
+	}
+}
+
+func TestRepositoryRejectsTargetCredentialsAndQuery(t *testing.T) {
+	for _, target := range []string{
+		"https://user:secret@service.example",
+		"https://service.example?token=secret",
+		"https://service.example#fragment",
+	} {
+		if _, err := targetEndpoint(target, "debug/vars"); err == nil {
+			t.Errorf("target %q should be rejected", target)
+		}
 	}
 }
 

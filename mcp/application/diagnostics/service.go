@@ -3,6 +3,7 @@ package diagnostics
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 const (
 	DefaultCPUProfileSeconds = 10
 	MaxCPUProfileSeconds     = 60
+	diagnosticSampleWindow   = time.Second
 )
 
 var validProfileTypes = map[string]bool{
@@ -23,25 +25,34 @@ var validProfileTypes = map[string]bool{
 type Service struct {
 	targets  domain.TargetRepository
 	profiles domain.ProfileStore
+	wait     func(context.Context, time.Duration) error
+	now      func() time.Time
 }
 
 func NewService(targets domain.TargetRepository, profiles domain.ProfileStore) Service {
-	return Service{targets: targets, profiles: profiles}
+	return Service{targets: targets, profiles: profiles, wait: waitForSample, now: func() time.Time { return time.Now().UTC() }}
 }
 
-func (s Service) CaptureProfile(ctx context.Context, target, profileType string, seconds int) (domain.ProfileMetadata, error) {
-	if !validProfileTypes[profileType] {
-		return domain.ProfileMetadata{}, fmt.Errorf("unsupported profile type %q", profileType)
+func (s Service) CaptureProfile(ctx context.Context, request domain.ProfileRequest) (domain.ProfileMetadata, error) {
+	if !validProfileTypes[request.Type] {
+		return domain.ProfileMetadata{}, fmt.Errorf("unsupported profile type %q", request.Type)
 	}
-	seconds, err := normalizeCaptureDuration(profileType, seconds)
+	seconds, err := normalizeCaptureDuration(request.Type, request.Seconds)
 	if err != nil {
 		return domain.ProfileMetadata{}, err
 	}
-	result, err := s.targets.FetchProfile(ctx, target, profileType, seconds)
+	if request.ForceGC && request.Type != "heap" {
+		return domain.ProfileMetadata{}, fmt.Errorf("force GC is only supported for heap profiles")
+	}
+	if request.ForceGC && seconds > 0 {
+		return domain.ProfileMetadata{}, fmt.Errorf("force GC cannot be combined with a delta profile")
+	}
+	request.Seconds = seconds
+	result, err := s.targets.FetchProfile(ctx, request)
 	if err != nil {
 		return domain.ProfileMetadata{}, fmt.Errorf("fetch profile: %w", err)
 	}
-	return s.profiles.Save(ctx, domain.CapturedProfile{Metadata: domain.ProfileMetadata{Target: target, Type: profileType, CapturedAt: time.Now().UTC(), Alerts: result.Alerts}, Data: result.Data})
+	return s.profiles.Save(ctx, domain.CapturedProfile{Metadata: domain.ProfileMetadata{Target: request.Target, Type: request.Type, CapturedAt: s.now(), Alerts: result.Alerts}, Data: result.Data})
 }
 
 func (s Service) AnalyzeProfile(ctx context.Context, id string, topN int) (ProfileAnalysis, error) {
@@ -140,25 +151,75 @@ func (s Service) GetDBPoolStatsWithAlerts(ctx context.Context, target string) ([
 
 func (s Service) Diagnose(ctx context.Context, target string) (DiagnosisReport, error) {
 	goroutines, err := s.AnalyzeGoroutines(ctx, target)
+	var availabilityAlerts []domain.InspectionAlert
 	if err != nil {
-		return DiagnosisReport{}, err
+		if ctx.Err() != nil {
+			return DiagnosisReport{}, ctx.Err()
+		}
+		goroutines = GoroutineReport{Groups: []GoroutineGroup{}}
+		availabilityAlerts = append(availabilityAlerts, domain.InspectionAlert{
+			Code: "GOROUTINES_UNAVAILABLE", Severity: "info",
+			Description: "The target goroutine profile could not be read; stack-based suspicions are unavailable.",
+		})
 	}
-	vars, alerts, err := s.GetExpvarsWithAlerts(ctx, target)
+	beforeVars, beforeAlerts, err := s.GetExpvarsWithAlerts(ctx, target)
 	if err != nil {
-		report := BuildDiagnosis(RuntimeStats{Instrumentation: "unavailable: /debug/vars could not be read"}, goroutines, nil)
-		report.Alerts = goroutines.Alerts
+		if ctx.Err() != nil {
+			return DiagnosisReport{}, ctx.Err()
+		}
+		report := DiagnosisReport{Goroutines: goroutines}
+		report.Metrics = metricWindow(emptyMetricSnapshot(), emptyMetricSnapshot())
+		report.Suspicions = analyzeMetricSnapshots(report.Metrics.Before, report.Metrics.After, goroutines)
+		clearGoroutineFindings(&report)
+		report.Alerts = uniqueAlerts(goroutines.Alerts, availabilityAlerts, []domain.InspectionAlert{{
+			Code:        "METRICS_UNAVAILABLE",
+			Severity:    "info",
+			Description: "The target /debug/vars endpoint could not be read; metric-based suspicions are unavailable.",
+		}})
 		report.Goroutines.Alerts = nil
 		return report, nil
 	}
-	runtime := runtimeStatsFromExpvars(vars)
-	if runtime.GoroutineSource == "" {
-		runtime.Goroutines = goroutines.Total
-		runtime.GoroutineSource = "goroutine_dump"
+	before := metricSnapshotFromExpvarsAt(beforeVars, s.now())
+	if err := s.wait(ctx, diagnosticSampleWindow); err != nil {
+		return DiagnosisReport{}, err
 	}
-	report := BuildDiagnosis(runtime, goroutines, dbPoolStatsFromExpvars(vars))
-	report.Alerts = uniqueAlerts(goroutines.Alerts, alerts)
+	afterVars, afterAlerts, err := s.GetExpvarsWithAlerts(ctx, target)
+	if err != nil {
+		if ctx.Err() != nil {
+			return DiagnosisReport{}, ctx.Err()
+		}
+		after := before
+		afterAlerts = append(afterAlerts, domain.InspectionAlert{
+			Code:        "METRIC_SECOND_SAMPLE_UNAVAILABLE",
+			Severity:    "info",
+			Description: "The second metric sample could not be read; the first sample was reused and rate-based suspicions were skipped.",
+		})
+		report := DiagnosisReport{Goroutines: goroutines, Metrics: metricWindow(before, after)}
+		report.Suspicions = analyzeMetricSnapshots(before, after, goroutines)
+		clearGoroutineFindings(&report)
+		report.Alerts = uniqueAlerts(goroutines.Alerts, availabilityAlerts, beforeAlerts, afterAlerts)
+		report.Goroutines.Alerts = nil
+		return report, nil
+	}
+	after := metricSnapshotFromExpvarsAt(afterVars, s.now())
+	report := DiagnosisReport{Goroutines: goroutines}
+	report.Metrics = metricWindow(before, after)
+	report.Suspicions = analyzeMetricSnapshots(before, after, goroutines)
+	clearGoroutineFindings(&report)
+	report.Alerts = uniqueAlerts(goroutines.Alerts, availabilityAlerts, beforeAlerts, afterAlerts)
 	report.Goroutines.Alerts = nil
 	return report, nil
+}
+
+func waitForSample(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func uniqueAlerts(alertGroups ...[]domain.InspectionAlert) []domain.InspectionAlert {
@@ -195,14 +256,14 @@ func (s Service) loadProfile(ctx context.Context, id string) (loadedProfile, err
 }
 
 func normalizeCaptureDuration(profileType string, seconds int) (int, error) {
-	if profileType != "cpu" {
+	if seconds == 0 {
+		if profileType == "cpu" {
+			return DefaultCPUProfileSeconds, nil
+		}
 		return 0, nil
 	}
-	if seconds == 0 {
-		return DefaultCPUProfileSeconds, nil
-	}
 	if seconds < 1 || seconds > MaxCPUProfileSeconds {
-		return 0, fmt.Errorf("cpu profile seconds must be between 1 and %d", MaxCPUProfileSeconds)
+		return 0, fmt.Errorf("profile seconds must be between 1 and %d", MaxCPUProfileSeconds)
 	}
 	return seconds, nil
 }
@@ -217,10 +278,29 @@ func summarizeProfile(metadata domain.ProfileMetadata, parsed *profile.Profile, 
 
 func summarizeProfileForSample(metadata domain.ProfileMetadata, parsed *profile.Profile, sampleType sampleType, topN int) ProfileAnalysis {
 	functions := profileFunctions(parsed, sampleType.index)
+	total := profileTotal(parsed, sampleType.index)
+	seconds := time.Duration(parsed.DurationNanos).Seconds()
+	for index := range functions {
+		if total != 0 {
+			functions[index].FlatPercent = float64(functions[index].Flat) / float64(total) * 100
+			functions[index].CumulativePercent = float64(functions[index].Cumulative) / float64(total) * 100
+		}
+		if seconds > 0 {
+			functions[index].FlatPerSecond = float64(functions[index].Flat) / seconds
+			functions[index].CumulativePerSecond = float64(functions[index].Cumulative) / seconds
+		}
+	}
 	if topN > 0 && len(functions) > topN {
 		functions = functions[:topN]
 	}
-	return ProfileAnalysis{Profile: metadata, SampleType: sampleType.Type, Unit: sampleType.Unit, Total: profileTotal(parsed, sampleType.index), Functions: functions}
+	analysis := ProfileAnalysis{
+		Profile: metadata, SampleType: sampleType.Type, Unit: sampleType.Unit,
+		DurationNs: parsed.DurationNanos, RatesAvailable: seconds > 0, Total: total, Functions: functions,
+	}
+	if seconds > 0 {
+		analysis.TotalPerSecond = float64(total) / seconds
+	}
+	return analysis
 }
 
 type sampleType struct {
@@ -243,7 +323,7 @@ func selectedSampleType(parsed *profile.Profile) (sampleType, bool) {
 		return sampleType{index: index, Type: value.Type, Unit: value.Unit}, true
 	}
 	value := parsed.SampleType[0]
-	return sampleType{Type: value.Type, Unit: value.Unit}, true
+	return sampleType{index: 0, Type: value.Type, Unit: value.Unit}, true
 }
 
 func preferredSampleType(parsed *profile.Profile) int {
@@ -277,19 +357,27 @@ func profileFunctions(parsed *profile.Profile, sampleIndex int) []FunctionSample
 			continue
 		}
 		value := sample.Value[sampleIndex]
-		for index, location := range sample.Location {
-			name := locationName(location)
-			if name == "" {
-				continue
-			}
-			item := values[name]
-			if item == nil {
-				item = &FunctionSample{Name: name}
-				values[name] = item
-			}
-			item.Cumulative += value
-			if index == 0 {
-				item.Flat += value
+		seen := make(map[string]struct{})
+		flatAssigned := false
+		for _, location := range sample.Location {
+			for _, line := range location.Line {
+				if line.Function == nil || line.Function.Name == "" {
+					continue
+				}
+				name := line.Function.Name
+				item := values[name]
+				if item == nil {
+					item = &FunctionSample{Name: name}
+					values[name] = item
+				}
+				if _, duplicate := seen[name]; !duplicate {
+					item.Cumulative += value
+					seen[name] = struct{}{}
+				}
+				if !flatAssigned {
+					item.Flat += value
+					flatAssigned = true
+				}
 			}
 		}
 	}
@@ -298,42 +386,52 @@ func profileFunctions(parsed *profile.Profile, sampleIndex int) []FunctionSample
 		functions = append(functions, *value)
 	}
 	sort.Slice(functions, func(i, j int) bool {
-		if functions[i].Cumulative == functions[j].Cumulative {
+		left, right := math.Abs(float64(functions[i].Cumulative)), math.Abs(float64(functions[j].Cumulative))
+		if left == right {
 			return functions[i].Name < functions[j].Name
 		}
-		return functions[i].Cumulative > functions[j].Cumulative
+		return left > right
 	})
 	return functions
 }
 
-func locationName(location *profile.Location) string {
-	if len(location.Line) == 0 || location.Line[0].Function == nil {
-		return ""
-	}
-	return location.Line[0].Function.Name
-}
-
 func diffProfileSummaries(first, second ProfileAnalysis, topN int) ProfileDiff {
+	ratesAvailable := first.DurationNs > 0 && second.DurationNs > 0
 	values := make(map[string]FunctionDelta, len(first.Functions)+len(second.Functions))
 	for _, function := range second.Functions {
-		values[function.Name] = FunctionDelta{Name: function.Name, Flat: function.Flat, Cumulative: function.Cumulative}
+		values[function.Name] = FunctionDelta{Name: function.Name, Flat: function.Flat, Cumulative: function.Cumulative, FlatPerSecond: function.FlatPerSecond, CumulativePerSecond: function.CumulativePerSecond}
 	}
 	for _, function := range first.Functions {
 		delta := values[function.Name]
 		delta.Name = function.Name
 		delta.Flat -= function.Flat
 		delta.Cumulative -= function.Cumulative
+		delta.FlatPerSecond -= function.FlatPerSecond
+		delta.CumulativePerSecond -= function.CumulativePerSecond
 		values[function.Name] = delta
 	}
 	functions := make([]FunctionDelta, 0, len(values))
 	for _, value := range values {
-		if value.Flat != 0 || value.Cumulative != 0 {
+		if value.Flat != 0 || value.Cumulative != 0 || value.FlatPerSecond != 0 || value.CumulativePerSecond != 0 {
 			functions = append(functions, value)
 		}
 	}
-	sort.Slice(functions, func(i, j int) bool { return functions[i].Cumulative > functions[j].Cumulative })
+	sort.Slice(functions, func(i, j int) bool {
+		left, right := math.Abs(float64(functions[i].Cumulative)), math.Abs(float64(functions[j].Cumulative))
+		if ratesAvailable {
+			left, right = math.Abs(functions[i].CumulativePerSecond), math.Abs(functions[j].CumulativePerSecond)
+		}
+		if left == right {
+			return functions[i].Name < functions[j].Name
+		}
+		return left > right
+	})
 	if topN > 0 && len(functions) > topN {
 		functions = functions[:topN]
 	}
-	return ProfileDiff{ProfileA: first.Profile, ProfileB: second.Profile, SampleType: first.SampleType, Unit: first.Unit, Functions: functions}
+	return ProfileDiff{
+		ProfileA: first.Profile, ProfileB: second.Profile, SampleType: first.SampleType, Unit: first.Unit,
+		DurationANs: first.DurationNs, DurationBNs: second.DurationNs,
+		RatesAvailable: ratesAvailable, Functions: functions,
+	}
 }

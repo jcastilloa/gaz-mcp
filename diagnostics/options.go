@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"path"
 	"strings"
+	"time"
 )
 
 // Middleware wraps all diagnostics endpoints.
@@ -22,6 +23,31 @@ type config struct {
 	customVars  []func(*expvar.Map)
 	allowlist   []netip.Prefix
 	middlewares []Middleware
+	blockRate   time.Duration
+	mutexRate   int
+	dbPoolNames map[string]struct{}
+}
+
+// WithBlockProfileRate enables block profiling with the requested sampling rate.
+func WithBlockProfileRate(rate time.Duration) Option {
+	return func(config *config) error {
+		if rate <= 0 {
+			return fmt.Errorf("diagnostics: block profile rate must be positive")
+		}
+		config.blockRate = rate
+		return nil
+	}
+}
+
+// WithMutexProfileFraction enables mutex profiling for approximately one in rate contention events.
+func WithMutexProfileFraction(rate int) Option {
+	return func(config *config) error {
+		if rate <= 0 {
+			return fmt.Errorf("diagnostics: mutex profile fraction must be positive")
+		}
+		config.mutexRate = rate
+		return nil
+	}
 }
 
 type dbPool struct {
@@ -45,12 +71,20 @@ func WithBasePath(basePath string) Option {
 // WithDBPool publishes db.Stats under gaz_diagnostics.db_pools[name].
 func WithDBPool(name string, db *sql.DB) Option {
 	return func(config *config) error {
-		if strings.TrimSpace(name) == "" {
+		name = strings.TrimSpace(name)
+		if name == "" {
 			return fmt.Errorf("diagnostics: database pool name cannot be empty")
 		}
 		if db == nil {
 			return fmt.Errorf("diagnostics: database pool %q is nil", name)
 		}
+		if config.dbPoolNames == nil {
+			config.dbPoolNames = make(map[string]struct{})
+		}
+		if _, duplicate := config.dbPoolNames[name]; duplicate {
+			return fmt.Errorf("diagnostics: duplicate database pool name %q", name)
+		}
+		config.dbPoolNames[name] = struct{}{}
 		config.dbPools = append(config.dbPools, dbPool{name: name, db: db})
 		return nil
 	}

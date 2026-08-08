@@ -3,9 +3,16 @@ package diagnostics
 import "context"
 
 type TargetRepository interface {
-	FetchProfile(ctx context.Context, target, profileType string, seconds int) (FetchResult, error)
+	FetchProfile(ctx context.Context, request ProfileRequest) (FetchResult, error)
 	FetchGoroutines(ctx context.Context, target string) (FetchResult, error)
 	FetchExpvars(ctx context.Context, target string) (FetchResult, error)
+}
+
+type ProfileRequest struct {
+	Target  string
+	Type    string
+	Seconds int
+	ForceGC bool
 }
 
 type FetchResult struct {

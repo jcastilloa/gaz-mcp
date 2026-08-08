@@ -1,0 +1,4 @@
+interface:
+  display_name: "gaz-mcp SQL"
+  short_description: "Inspect MySQL and PostgreSQL safely"
+  default_prompt: "Use $gaz-mcp-db to inspect the configured database safely."

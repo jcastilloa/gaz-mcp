@@ -27,6 +27,9 @@ func AnalyzeGoroutines(dump string) (GoroutineReport, error) {
 	groups := groupGoroutines(items)
 	sort.Slice(groups, func(i, j int) bool {
 		if groups[i].Count == groups[j].Count {
+			if groups[i].BlockedFor == groups[j].BlockedFor {
+				return strings.Join(groups[i].Stack, "\n") < strings.Join(groups[j].Stack, "\n")
+			}
 			return groups[i].BlockedFor > groups[j].BlockedFor
 		}
 		return groups[i].Count > groups[j].Count

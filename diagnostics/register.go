@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"expvar"
 	"fmt"
+	"html"
+	"io"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"runtime"
 	"runtime/pprof"
@@ -14,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	profiledata "github.com/google/pprof/profile"
 )
 
 // Register exposes diagnostics endpoints on mux.
@@ -29,9 +34,19 @@ func Register(mux *http.ServeMux, options ...Option) error {
 		return err
 	}
 	instrumentation := newInstrumentation(config)
+	configureProfiling(config)
 	registerPprof(mux, config, instrumentation.protect)
 	registerHandler(mux, config.basePath+"/debug/vars", instrumentation.protect(http.HandlerFunc(instrumentation.serveExpvars)))
 	return nil
+}
+
+func configureProfiling(config config) {
+	if config.blockRate > 0 {
+		runtime.SetBlockProfileRate(int(config.blockRate))
+	}
+	if config.mutexRate > 0 {
+		runtime.SetMutexProfileFraction(config.mutexRate)
+	}
 }
 
 // Handler creates a self-contained diagnostics handler. It is useful when an
@@ -105,6 +120,11 @@ func newInstrumentation(config config) instrumentation {
 	}
 
 	diagnostics := new(expvar.Map)
+	diagnostics.Set("collected_at", expvar.Func(func() any { return time.Now().UTC().Format(time.RFC3339Nano) }))
+	diagnostics.Set("runtime", expvar.Func(func() any { return collectRuntimeMetrics() }))
+	diagnostics.Set("process", expvar.Func(func() any { return collectProcessMetrics("/proc") }))
+	diagnostics.Set("host", expvar.Func(func() any { return collectHostMetrics("/proc") }))
+	diagnostics.Set("cgroup", expvar.Func(func() any { return collectCgroupMetrics("/proc", "/sys/fs/cgroup") }))
 	diagnostics.Set("db_pools", dbPools)
 	diagnostics.Set("custom", customVars)
 	return instrumentation{diagnostics: diagnostics, protect: securityHandler(config)}
@@ -152,16 +172,97 @@ func servePprof(writer http.ResponseWriter, request *http.Request) {
 		serveNamedPprof(writer, request, name)
 		return
 	}
+	if seconds := request.FormValue("seconds"); seconds != "" {
+		serveDeltaProfile(writer, request, name, profile, seconds)
+		return
+	}
+	if name == "heap" {
+		gc, _ := strconv.Atoi(request.FormValue("gc"))
+		if gc > 0 {
+			runtime.GC()
+		}
+	}
 	debug, _ := strconv.Atoi(request.FormValue("debug"))
 	writer.Header().Set("X-Content-Type-Options", "nosniff")
 	if debug > 0 {
 		writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	} else {
 		writer.Header().Set("Content-Type", "application/octet-stream")
+		writer.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, name))
 	}
 	if err := profile.WriteTo(writer, debug); err != nil {
 		http.Error(writer, "could not write profile", http.StatusInternalServerError)
 	}
+}
+
+var deltaProfiles = map[string]bool{
+	"allocs": true, "block": true, "goroutine": true, "heap": true,
+	"goroutineleak": true, "mutex": true, "threadcreate": true,
+}
+
+func serveDeltaProfile(writer http.ResponseWriter, request *http.Request, name string, runtimeProfile *pprof.Profile, secondsText string) {
+	writer.Header().Set("X-Content-Type-Options", "nosniff")
+	seconds, err := strconv.ParseInt(secondsText, 10, 64)
+	if err != nil || seconds <= 0 {
+		http.Error(writer, `invalid value for "seconds" - must be a positive integer`, http.StatusBadRequest)
+		return
+	}
+	if !deltaProfiles[name] {
+		http.Error(writer, `"seconds" parameter is not supported for this profile type`, http.StatusBadRequest)
+		return
+	}
+	debug, _ := strconv.Atoi(request.FormValue("debug"))
+	if debug != 0 {
+		http.Error(writer, "seconds and debug params are incompatible", http.StatusBadRequest)
+		return
+	}
+	configureWriteDeadline(writer, request, float64(seconds))
+	before, err := collectProfile(runtimeProfile)
+	if err != nil {
+		http.Error(writer, "failed to collect profile", http.StatusInternalServerError)
+		return
+	}
+	timer := time.NewTimer(time.Duration(seconds) * time.Second)
+	defer timer.Stop()
+	select {
+	case <-request.Context().Done():
+		http.Error(writer, request.Context().Err().Error(), http.StatusInternalServerError)
+		return
+	case <-timer.C:
+	}
+	after, err := collectProfile(runtimeProfile)
+	if err != nil {
+		http.Error(writer, "failed to collect profile", http.StatusInternalServerError)
+		return
+	}
+	timestamp := after.TimeNanos
+	duration := after.TimeNanos - before.TimeNanos
+	before.Scale(-1)
+	delta, err := profiledata.Merge([]*profiledata.Profile{before, after})
+	if err != nil {
+		http.Error(writer, "failed to compute delta profile", http.StatusInternalServerError)
+		return
+	}
+	delta.TimeNanos = timestamp
+	delta.DurationNanos = duration
+	writer.Header().Set("Content-Type", "application/octet-stream")
+	writer.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-delta"`, name))
+	if err := delta.Write(writer); err != nil {
+		return
+	}
+}
+
+func collectProfile(runtimeProfile *pprof.Profile) (*profiledata.Profile, error) {
+	var output bytes.Buffer
+	if err := runtimeProfile.WriteTo(&output, 0); err != nil {
+		return nil, err
+	}
+	profile, err := profiledata.Parse(&output)
+	if err != nil {
+		return nil, err
+	}
+	profile.TimeNanos = time.Now().UnixNano()
+	return profile, nil
 }
 
 func serveNamedPprof(writer http.ResponseWriter, request *http.Request, name string) {
@@ -191,12 +292,16 @@ func servePprofIndex(writer http.ResponseWriter) {
 	_, _ = writer.Write([]byte("<html><head><title>/debug/pprof/</title></head><body>\n"))
 	profiles := pprof.Profiles()
 	for _, profile := range profiles {
-		_, _ = fmt.Fprintf(writer, "<a href='%s?debug=1'>%s</a><br>\n", profile.Name(), profile.Name())
+		writePprofLink(writer, profile.Name())
 	}
 	for _, name := range []string{"cmdline", "profile", "symbol", "trace"} {
 		_, _ = fmt.Fprintf(writer, "<a href='%s'>%s</a><br>\n", name, name)
 	}
 	_, _ = writer.Write([]byte("</body></html>\n"))
+}
+
+func writePprofLink(writer io.Writer, name string) {
+	_, _ = fmt.Fprintf(writer, "<a href='%s?debug=1'>%s</a><br>\n", html.EscapeString(url.PathEscape(name)), html.EscapeString(name))
 }
 
 func serveCmdline(writer http.ResponseWriter, _ *http.Request) {
@@ -210,9 +315,7 @@ func serveCPUProfile(writer http.ResponseWriter, request *http.Request) {
 	if seconds <= 0 {
 		seconds = 30
 	}
-	if seconds > 60 {
-		seconds = 60
-	}
+	configureWriteDeadline(writer, request, float64(seconds))
 	writer.Header().Set("X-Content-Type-Options", "nosniff")
 	writer.Header().Set("Content-Type", "application/octet-stream")
 	writer.Header().Set("Content-Disposition", `attachment; filename="profile"`)
@@ -239,11 +342,10 @@ func serveTrace(writer http.ResponseWriter, request *http.Request) {
 	if seconds <= 0 {
 		seconds = 1
 	}
-	if seconds > 10 {
-		seconds = 10
-	}
+	configureWriteDeadline(writer, request, seconds)
 	writer.Header().Set("X-Content-Type-Options", "nosniff")
 	writer.Header().Set("Content-Type", "application/octet-stream")
+	writer.Header().Set("Content-Disposition", `attachment; filename="trace"`)
 	if err := trace.Start(writer); err != nil {
 		http.Error(writer, "could not enable execution tracing", http.StatusInternalServerError)
 		return
@@ -260,6 +362,15 @@ func serveTrace(writer http.ResponseWriter, request *http.Request) {
 		}
 	}
 	trace.Stop()
+}
+
+func configureWriteDeadline(writer http.ResponseWriter, request *http.Request, seconds float64) {
+	server, ok := request.Context().Value(http.ServerContextKey).(*http.Server)
+	if !ok || server.WriteTimeout <= 0 {
+		return
+	}
+	deadline := time.Now().Add(server.WriteTimeout + time.Duration(seconds*float64(time.Second)))
+	_ = http.NewResponseController(writer).SetWriteDeadline(deadline)
 }
 
 func serveSymbol(writer http.ResponseWriter, request *http.Request) {

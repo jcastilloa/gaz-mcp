@@ -2,6 +2,8 @@ package diagnostics
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -31,5 +33,41 @@ func TestProfileStoreRejectsPathTraversal(t *testing.T) {
 	_, err := NewProfileStore(t.TempDir()).Load(context.Background(), "../profile")
 	if err == nil {
 		t.Fatal("expected invalid profile ID error")
+	}
+}
+
+func TestProfileStoreRemovesDataWhenMetadataWriteFails(t *testing.T) {
+	directory := t.TempDir()
+	store := NewProfileStore(directory)
+	store.writeMetadata = func(string, []byte) error { return os.ErrPermission }
+	if _, err := store.Save(context.Background(), domain.CapturedProfile{Data: []byte("profile data")}); err == nil {
+		t.Fatal("save should fail")
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) == ".pprof" {
+			t.Fatalf("orphaned profile data %q", entry.Name())
+		}
+	}
+}
+
+func TestProfileStoreTightensExistingDirectoryPermissions(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "profiles")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store := NewProfileStore(directory)
+	if _, err := store.Save(context.Background(), domain.CapturedProfile{Data: []byte("profile data")}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if permissions := info.Mode().Perm(); permissions != 0o700 {
+		t.Fatalf("directory permissions = %o, want 700", permissions)
 	}
 }

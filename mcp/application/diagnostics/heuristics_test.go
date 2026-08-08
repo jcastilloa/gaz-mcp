@@ -1,0 +1,259 @@
+package diagnostics
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestBuildMetricSnapshotPreservesRawDiagnosticMetrics(t *testing.T) {
+	vars := metricVars(t, `{
+  "collected_at":"2026-08-08T12:00:00Z",
+  "runtime":{"gomaxprocs":4,"goroutines":{"runnable":8}},
+  "process":{"open_fds":900,"fd_soft_limit":1000},
+  "host":{"logical_cpus":4,"memory_available_bytes":1000},
+  "cgroup":{"memory_current_bytes":900,"memory_max_bytes":1000},
+  "db_pools":{"primary":{"in_use":10,"max_open_connections":10,"wait_count":3}}
+}`)
+
+	snapshot := metricSnapshotFromExpvars(vars)
+	if snapshot.CollectedAt.IsZero() {
+		t.Fatal("collected_at was not parsed")
+	}
+	if numberAt(snapshot.Process, "open_fds") != 900 {
+		t.Fatalf("process metrics = %#v", snapshot.Process)
+	}
+	if numberAt(snapshot.Runtime, "goroutines", "runnable") != 8 {
+		t.Fatalf("runtime metrics = %#v", snapshot.Runtime)
+	}
+	if numberAt(snapshot.Host, "logical_cpus") != 4 {
+		t.Fatalf("host metrics = %#v", snapshot.Host)
+	}
+	if len(snapshot.DBPools) != 1 || snapshot.DBPools[0].Name != "primary" {
+		t.Fatalf("db pools = %#v", snapshot.DBPools)
+	}
+}
+
+func TestHeuristicsReturnSeparateSuspicionsWithStructuredEvidence(t *testing.T) {
+	before := MetricSnapshot{
+		CollectedAt: time.Unix(100, 0),
+		Runtime:     metricMap(t, `{"gomaxprocs":4,"goroutines":{"runnable":10},"mutex_wait_seconds":1}`),
+		Process:     metricMap(t, `{"open_fds":800,"fd_soft_limit":1000}`),
+		Host:        metricMap(t, `{"memory_total_bytes":1000,"memory_available_bytes":200,"file_handles_allocated":700,"file_handles_max":1000,"cpu_pressure":{"some_avg10":5}}`),
+		Cgroup:      metricMap(t, `{"memory_current_bytes":850,"memory_max_bytes":1000,"cpu_periods":100,"cpu_throttled_periods":10,"cpu_throttled_usec":100}`),
+	}
+	after := MetricSnapshot{
+		CollectedAt: time.Unix(102, 0),
+		Runtime:     metricMap(t, `{"gomaxprocs":4,"goroutines":{"runnable":12},"mutex_wait_seconds":1.8}`),
+		Process:     metricMap(t, `{"open_fds":920,"fd_soft_limit":1000}`),
+		Host:        metricMap(t, `{"memory_total_bytes":1000,"memory_available_bytes":80,"file_handles_allocated":900,"file_handles_max":1000,"cpu_pressure":{"some_avg10":25}}`),
+		Cgroup:      metricMap(t, `{"memory_current_bytes":960,"memory_max_bytes":1000,"cpu_periods":120,"cpu_throttled_periods":16,"cpu_throttled_usec":40600}`),
+	}
+
+	suspicions := analyzeMetricSnapshots(before, after, GoroutineReport{})
+	for _, code := range []string{FindingFDLimitPressure, FindingHostMemoryPressure, FindingHostCPUPressure, FindingSystemFileTablePressure, FindingCgroupMemoryPressure, FindingCPUThrottled, FindingSchedulerPressure, FindingMutexContention} {
+		suspicion := suspicionByCode(t, suspicions, code)
+		if suspicion.Confidence != ConfidenceSuspected || len(suspicion.Evidence) == 0 || suspicion.Verify == "" {
+			t.Fatalf("suspicion %s = %#v", code, suspicion)
+		}
+		for _, evidence := range suspicion.Evidence {
+			if evidence.Metric == "" || evidence.Value == nil {
+				t.Fatalf("evidence for %s = %#v", code, evidence)
+			}
+		}
+	}
+}
+
+func TestHeuristicsDoNotTreatHistoricalCountersAsCurrentActivity(t *testing.T) {
+	before := MetricSnapshot{
+		CollectedAt: time.Unix(100, 0),
+		Cgroup:      metricMap(t, `{"cpu_periods":100,"cpu_throttled_periods":50,"cpu_throttled_usec":1000}`),
+		DBPools:     []DBPoolStats{{Name: "primary", WaitCount: 99}},
+	}
+	after := MetricSnapshot{
+		CollectedAt: time.Unix(102, 0),
+		Cgroup:      metricMap(t, `{"cpu_periods":120,"cpu_throttled_periods":50,"cpu_throttled_usec":1000}`),
+		DBPools:     []DBPoolStats{{Name: "primary", WaitCount: 99}},
+	}
+
+	suspicions := analyzeMetricSnapshots(before, after, GoroutineReport{})
+	if hasSuspicion(suspicions, FindingCPUThrottled) || hasSuspicion(suspicions, FindingDBPoolExhausted) {
+		t.Fatalf("suspicions = %#v, want no current throttling or DB wait", suspicions)
+	}
+}
+
+func TestCounterDeltaPreservesLargeJSONIntegers(t *testing.T) {
+	before := map[string]any{"counter": json.Number("9007199254740992")}
+	after := map[string]any{"counter": json.Number("9007199254740993")}
+	if delta := deltaAt(before, after, "counter"); delta != 1 {
+		t.Fatalf("counter delta = %v, want 1", delta)
+	}
+}
+
+func TestHeuristicsIgnoreMalformedNumericMetrics(t *testing.T) {
+	after := MetricSnapshot{
+		CollectedAt: time.Unix(102, 0),
+		Host: metricMap(t, `{
+			"memory_total_bytes":1000,
+			"memory_available_bytes":"invalid",
+			"file_handles_allocated":"invalid",
+			"file_handles_max":1000
+		}`),
+	}
+	suspicions := analyzeMetricSnapshots(MetricSnapshot{CollectedAt: time.Unix(100, 0)}, after, GoroutineReport{})
+	if hasSuspicion(suspicions, FindingHostMemoryPressure) || hasSuspicion(suspicions, FindingSystemFileTablePressure) {
+		t.Fatalf("malformed metrics produced suspicions: %#v", suspicions)
+	}
+}
+
+func TestSchedulerPressureRequiresBothSamples(t *testing.T) {
+	before := MetricSnapshot{
+		CollectedAt: time.Unix(100, 0),
+		Runtime:     metricMap(t, `{"gomaxprocs":4,"goroutines":{"runnable":1}}`),
+	}
+	after := MetricSnapshot{
+		CollectedAt: time.Unix(102, 0),
+		Runtime:     metricMap(t, `{"gomaxprocs":4,"goroutines":{"runnable":8}}`),
+	}
+	if suspicions := analyzeMetricSnapshots(before, after, GoroutineReport{}); hasSuspicion(suspicions, FindingSchedulerPressure) {
+		t.Fatalf("transient runnable spike produced scheduler pressure: %#v", suspicions)
+	}
+}
+
+func TestCPUThrottlingIgnoresNegligibleThrottleWithoutSchedulerPressure(t *testing.T) {
+	before := MetricSnapshot{
+		CollectedAt: time.Unix(100, 0),
+		Cgroup:      metricMap(t, `{"cpu_periods":100,"cpu_throttled_periods":10,"cpu_throttled_usec":100}`),
+	}
+	after := MetricSnapshot{
+		CollectedAt: time.Unix(102, 0),
+		Cgroup:      metricMap(t, `{"cpu_periods":120,"cpu_throttled_periods":12,"cpu_throttled_usec":101}`),
+	}
+	if suspicions := analyzeMetricSnapshots(before, after, GoroutineReport{}); hasSuspicion(suspicions, FindingCPUThrottled) {
+		t.Fatalf("negligible throttling produced suspicion: %#v", suspicions)
+	}
+}
+
+func TestCgroupOOMEventIsReportedAfterMemoryDrops(t *testing.T) {
+	before := MetricSnapshot{
+		CollectedAt: time.Unix(100, 0),
+		Cgroup:      metricMap(t, `{"memory_events":{"oom":0,"oom_kill":0}}`),
+	}
+	after := MetricSnapshot{
+		CollectedAt: time.Unix(102, 0),
+		Cgroup:      metricMap(t, `{"memory_events":{"oom":1,"oom_kill":1}}`),
+	}
+	suspicion := suspicionByCode(t, analyzeMetricSnapshots(before, after, GoroutineReport{}), FindingCgroupMemoryPressure)
+	if suspicion.Severity != "critical" {
+		t.Fatalf("suspicion = %#v, want critical OOM evidence", suspicion)
+	}
+	for _, evidence := range suspicion.Evidence {
+		if evidence.Value == nil {
+			t.Fatalf("suspicion includes unavailable evidence: %#v", suspicion)
+		}
+	}
+}
+
+func TestHeuristicsDoNotTreatMetricsMissingFromBaselineAsGrowth(t *testing.T) {
+	before := MetricSnapshot{CollectedAt: time.Unix(100, 0), Runtime: map[string]any{}, Process: map[string]any{}, Cgroup: map[string]any{}}
+	after := MetricSnapshot{
+		CollectedAt: time.Unix(102, 0),
+		Runtime:     metricMap(t, `{"gc_cpu_seconds":5,"user_cpu_seconds":5,"heap_allocated_bytes_total":100000000,"mutex_wait_seconds":2}`),
+		Process:     metricMap(t, `{"rss_bytes":100000000,"open_fds":40,"fd_soft_limit":1000}`),
+		Cgroup:      metricMap(t, `{"cpu_periods":100,"cpu_throttled_periods":90,"cpu_throttled_usec":1000}`),
+		DBPools:     []DBPoolStats{{Name: "primary", InUse: 10, MaxOpenConnections: 10, WaitCount: 99}},
+	}
+
+	suspicions := analyzeMetricSnapshots(before, after, GoroutineReport{})
+	for _, code := range []string{FindingPossibleFDLeak, FindingNativeMemoryPressure, FindingCPUThrottled, FindingGCPressure, FindingMutexContention, FindingDBPoolExhausted} {
+		if hasSuspicion(suspicions, code) {
+			t.Errorf("%s should require the metric in both samples: %#v", code, suspicions)
+		}
+	}
+}
+
+func TestDBPoolSuspicionIsConfirmedOnlyWithCurrentWaitersAndSaturation(t *testing.T) {
+	goroutines, err := AnalyzeGoroutines(blockedRequests)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := MetricSnapshot{CollectedAt: time.Unix(100, 0), DBPools: []DBPoolStats{{Name: "primary", WaitCount: 5}}}
+	after := MetricSnapshot{CollectedAt: time.Unix(102, 0), DBPools: []DBPoolStats{{Name: "primary", InUse: 10, MaxOpenConnections: 10, WaitCount: 8}}}
+
+	suspicion := suspicionByCode(t, analyzeMetricSnapshots(before, after, goroutines), FindingDBPoolExhausted)
+	if suspicion.Confidence != ConfidenceConfirmed {
+		t.Fatalf("confidence = %q, want confirmed", suspicion.Confidence)
+	}
+	if len(suspicion.Evidence) < 3 {
+		t.Fatalf("evidence = %#v, want stacks, saturation and wait delta", suspicion.Evidence)
+	}
+}
+
+func TestDBPoolSuspicionIsNotConfirmedWhenWaitersCannotBeAttributedAcrossPools(t *testing.T) {
+	goroutines, err := AnalyzeGoroutines(blockedRequests)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := MetricSnapshot{CollectedAt: time.Unix(100, 0), DBPools: []DBPoolStats{{Name: "primary"}, {Name: "analytics"}}}
+	after := MetricSnapshot{CollectedAt: time.Unix(102, 0), DBPools: []DBPoolStats{
+		{Name: "primary", InUse: 10, MaxOpenConnections: 10, WaitCount: 2},
+		{Name: "analytics", InUse: 5, MaxOpenConnections: 5, WaitCount: 3},
+	}}
+
+	suspicions := analyzeMetricSnapshots(before, after, goroutines)
+	for _, suspicion := range suspicions {
+		if suspicion.Code == FindingDBPoolExhausted && suspicion.Confidence == ConfidenceConfirmed {
+			t.Fatalf("suspicion = %#v, waiters cannot be attributed to one of multiple pools", suspicion)
+		}
+	}
+}
+
+func TestDBPoolWaiterSuspicionIsPreservedWhenPublishedPoolsDoNotConfirmIt(t *testing.T) {
+	goroutines, err := AnalyzeGoroutines(blockedRequests)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := MetricSnapshot{CollectedAt: time.Unix(100, 0), DBPools: []DBPoolStats{{Name: "primary", WaitCount: 5}}}
+	after := MetricSnapshot{CollectedAt: time.Unix(102, 0), DBPools: []DBPoolStats{{Name: "primary", InUse: 1, Idle: 4, MaxOpenConnections: 10, WaitCount: 5}}}
+	suspicion := suspicionByCode(t, analyzeMetricSnapshots(before, after, goroutines), FindingDBPoolExhausted)
+	if suspicion.Confidence != ConfidenceSuspected || !strings.Contains(suspicion.Reason, "do not identify") {
+		t.Fatalf("suspicion = %#v, want preserved unconfirmed stack evidence", suspicion)
+	}
+}
+
+func TestMetricSnapshotGracefullyHandlesStandardExpvarOnly(t *testing.T) {
+	vars := map[string]any{"num_goroutine": json.Number("3")}
+	snapshot := metricSnapshotFromExpvars(vars)
+	if snapshot.Runtime == nil || numberAt(snapshot.Runtime, "goroutines", "total") != 3 {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	if snapshot.Process == nil || snapshot.Host == nil || snapshot.Cgroup == nil || snapshot.DBPools == nil {
+		t.Fatalf("optional metrics must be empty rather than nil: %#v", snapshot)
+	}
+}
+
+func metricVars(t *testing.T, diagnostics string) map[string]any {
+	t.Helper()
+	return metricMap(t, `{"gaz_diagnostics":`+diagnostics+`}`)
+}
+
+func metricMap(t *testing.T, data string) map[string]any {
+	t.Helper()
+	vars, err := parseExpvars([]byte(data))
+	if err != nil {
+		t.Fatalf("parse metrics: %v", err)
+	}
+	return vars
+}
+
+func suspicionByCode(t *testing.T, suspicions []Suspicion, code string) Suspicion {
+	t.Helper()
+	for _, suspicion := range suspicions {
+		if suspicion.Code == code {
+			return suspicion
+		}
+	}
+	t.Fatalf("suspicion %s not found in %#v", code, suspicions)
+	return Suspicion{}
+}

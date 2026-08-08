@@ -3,6 +3,8 @@ package diagnostics
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"sort"
 	"time"
 )
@@ -12,6 +14,13 @@ func parseExpvars(data []byte) (map[string]any, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	if err := decoder.Decode(&vars); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("expvar response contains multiple JSON values")
+		}
 		return nil, err
 	}
 	return vars, nil

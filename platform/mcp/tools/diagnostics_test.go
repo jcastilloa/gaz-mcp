@@ -83,6 +83,40 @@ func TestGetExpvarsIncludesInformationalInspectionAlert(t *testing.T) {
 	}
 }
 
+func TestDiagnoseReturnsMetricsAndSeparateSuspicions(t *testing.T) {
+	service := diagnosticsApp.NewService(toolTargetRepository{
+		goroutines: []byte("goroutine 1 [running]:\nmain.main()\n\t/srv/main.go:1\n"),
+		expvars: []byte(`{"gaz_diagnostics":{
+  "collected_at":"2026-08-08T12:00:00Z",
+  "runtime":{},"process":{"open_fds":900,"fd_soft_limit":1000},
+  "cgroup":{},"db_pools":{},"custom":{}
+}}`),
+	}, toolProfileStore{})
+
+	result, err := NewDiagnostics(service).DiagnoseHandler(context.Background(), toolRequest("http://service:6060"))
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	data, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal structured content: %v", err)
+	}
+	var content map[string]json.RawMessage
+	if err := json.Unmarshal(data, &content); err != nil {
+		t.Fatalf("decode structured content: %v", err)
+	}
+	for _, name := range []string{"metrics", "goroutines", "suspicions"} {
+		if _, ok := content[name]; !ok {
+			t.Errorf("structured content is missing %q: %s", name, data)
+		}
+	}
+	for _, name := range []string{"runtime", "db_pools", "conclusions"} {
+		if _, ok := content[name]; ok {
+			t.Errorf("structured content includes legacy field %q: %s", name, data)
+		}
+	}
+}
+
 func assertStructuredContentIsObject(t *testing.T, result *mcp.CallToolResult, poolCount int) {
 	t.Helper()
 	data, err := json.Marshal(result)
@@ -117,16 +151,17 @@ func toolRequest(target string) mcp.CallToolRequest {
 }
 
 type toolTargetRepository struct {
-	expvars []byte
-	alerts  []diagnosticsDomain.InspectionAlert
+	expvars    []byte
+	goroutines []byte
+	alerts     []diagnosticsDomain.InspectionAlert
 }
 
-func (repository toolTargetRepository) FetchProfile(context.Context, string, string, int) (diagnosticsDomain.FetchResult, error) {
+func (repository toolTargetRepository) FetchProfile(context.Context, diagnosticsDomain.ProfileRequest) (diagnosticsDomain.FetchResult, error) {
 	return diagnosticsDomain.FetchResult{}, nil
 }
 
 func (repository toolTargetRepository) FetchGoroutines(context.Context, string) (diagnosticsDomain.FetchResult, error) {
-	return diagnosticsDomain.FetchResult{}, nil
+	return diagnosticsDomain.FetchResult{Data: repository.goroutines}, nil
 }
 
 func (repository toolTargetRepository) FetchExpvars(context.Context, string) (diagnosticsDomain.FetchResult, error) {

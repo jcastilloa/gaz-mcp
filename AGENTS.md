@@ -1,13 +1,11 @@
 # AGENTS.md — gaz-mcp MCP
 
-MySQL + PostgreSQL + Jenkins MCP proxy. Hexagonal architecture, `cobra` + `viper`, DI.
+MySQL + PostgreSQL + Jenkins + Go diagnostics MCP proxy. Hexagonal architecture, `cobra` + `viper`, DI.
 
 ## Mandatory Skills
 
 Before making changes in this repository, load and apply these local skills:
 
-- `.codex/skills/gaz-mcp-db` — SQL proxy interface and usage patterns
-- `.codex/skills/gaz-mcp-jenkins` — Jenkins proxy interface, usage patterns, and context-distill CLI integration
 - `.codex/skills/clean-code`
 - `.codex/skills/golang-pro`
 - `.codex/skills/sql-pro`
@@ -19,14 +17,15 @@ Before making changes in this repository, load and apply these local skills:
 Notes:
 
 - `.claude/skills` and `.opencode/skills` are symlinks to `.codex/skills`.
-- `gaz-mcp-db` documents the MCP tool interface and usage patterns for the SQL proxy.
-- `gaz-mcp-jenkins` documents the Jenkins proxy interface, all 33 tools, snapshot/versioning system, and how to use the `context-distill` CLI to distil large responses (build logs, script output, config XML).
+- `.codex/skills` contains repository-development skills only.
+- Product-facing skills shipped to gaz-mcp users live under `skills/` and are not mandatory contributor instructions.
 
 ## Structure
 
 ```text
 gaz-mcp/
 ├── cmd/server/main.go
+├── diagnostics/             # Independent Go instrumentation module
 ├── mcp/
 │   ├── application/
 │   │   ├── jenkins/          # Jenkins use cases + NoopSnapshotRepository
@@ -45,6 +44,7 @@ gaz-mcp/
 │   │   ├── sql/
 │   │   └── tools/            # sql_query.go, jenkins_read.go, jenkins_write.go, jenkins_snapshot.go
 │   └── openai/
+├── skills/                  # Product-facing skills; not contributor instructions
 └── shared/
     ├── ai/domain/
     └── config/domain/        # EnvironmentConfig, JenkinsEnvironmentConfig, SnapshotConfig

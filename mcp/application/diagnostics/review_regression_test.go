@@ -3,6 +3,7 @@ package diagnostics
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -57,6 +58,114 @@ func TestAnalyzeProfileUsesDefaultSampleType(t *testing.T) {
 	}
 	if len(analysis.Functions) != 1 || analysis.Functions[0].Flat != 1024 || analysis.Functions[0].Cumulative != 1024 {
 		t.Fatalf("functions = %#v, want default sample values", analysis.Functions)
+	}
+}
+
+func TestAnalyzeProfileReturnsPercentagesRatesAndInlineFramesWithoutRecursiveDoubleCount(t *testing.T) {
+	leaf := &profilepkg.Function{ID: 1, Name: "example.com/service.leaf"}
+	inlined := &profilepkg.Function{ID: 2, Name: "example.com/service.inlined"}
+	leafLocation := &profilepkg.Location{ID: 1, Line: []profilepkg.Line{{Function: leaf}, {Function: inlined}}}
+	recursiveLocation := &profilepkg.Location{ID: 2, Line: []profilepkg.Line{{Function: leaf}}}
+	parsed := &profilepkg.Profile{
+		SampleType:        []*profilepkg.ValueType{{Type: "cpu", Unit: "nanoseconds"}},
+		DefaultSampleType: "cpu",
+		DurationNanos:     int64(2 * time.Second),
+		Function:          []*profilepkg.Function{leaf, inlined},
+		Location:          []*profilepkg.Location{leafLocation, recursiveLocation},
+		Sample:            []*profilepkg.Sample{{Location: []*profilepkg.Location{leafLocation, recursiveLocation}, Value: []int64{100}}},
+	}
+	analysis := summarizeProfile(domain.ProfileMetadata{}, parsed, 20)
+	if !analysis.RatesAvailable || analysis.DurationNs != int64(2*time.Second) || analysis.TotalPerSecond != 50 {
+		t.Fatalf("analysis timing = %#v, want 2s and 50/s", analysis)
+	}
+	leafSample := functionByName(t, analysis.Functions, leaf.Name)
+	if leafSample.Flat != 100 || leafSample.Cumulative != 100 || leafSample.FlatPercent != 100 || leafSample.FlatPerSecond != 50 {
+		t.Fatalf("leaf sample = %#v", leafSample)
+	}
+	inlineSample := functionByName(t, analysis.Functions, inlined.Name)
+	if inlineSample.Flat != 0 || inlineSample.Cumulative != 100 || inlineSample.CumulativePercent != 100 {
+		t.Fatalf("inline sample = %#v", inlineSample)
+	}
+}
+
+func TestMetricSnapshotOmitsUnavailableTargetTimestamp(t *testing.T) {
+	snapshot := metricSnapshotFromExpvarsAt(map[string]any{}, time.Unix(200, 0))
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte("collected_at")) {
+		t.Fatalf("snapshot = %s, missing target timestamp must be omitted", encoded)
+	}
+}
+
+func TestDiffProfilesIncludesDurationNormalizedDeltas(t *testing.T) {
+	before := capturedTimedProfile(t, "before", time.Second, 100)
+	after := capturedTimedProfile(t, "after", 2*time.Second, 200)
+	service := NewService(fakeTargetRepository{}, reviewProfileStore{profiles: map[string]domain.CapturedProfile{"before": before, "after": after}})
+	diff, err := service.DiffProfiles(context.Background(), "before", "after", 20)
+	if err != nil {
+		t.Fatalf("diff profiles: %v", err)
+	}
+	if diff.DurationANs != int64(time.Second) || diff.DurationBNs != int64(2*time.Second) {
+		t.Fatalf("durations = %d/%d", diff.DurationANs, diff.DurationBNs)
+	}
+	if !diff.RatesAvailable {
+		t.Fatal("rates_available = false, want true")
+	}
+	if len(diff.Functions) != 1 || diff.Functions[0].Cumulative != 100 || diff.Functions[0].CumulativePerSecond != 0 {
+		t.Fatalf("functions = %#v, want raw growth but unchanged rate", diff.Functions)
+	}
+}
+
+func TestCaptureProfileRejectsIncompatibleOptions(t *testing.T) {
+	service := NewService(fakeTargetRepository{}, memoryProfileStore{})
+	for _, request := range []domain.ProfileRequest{
+		{Target: "http://service:6060", Type: "cpu", ForceGC: true},
+		{Target: "http://service:6060", Type: "heap", Seconds: 1, ForceGC: true},
+	} {
+		if _, err := service.CaptureProfile(context.Background(), request); err == nil {
+			t.Errorf("request %#v should be rejected", request)
+		}
+	}
+}
+
+func TestDiffProfilesOrdersLargestAbsoluteChangeFirst(t *testing.T) {
+	first := ProfileAnalysis{Functions: []FunctionSample{{Name: "large-decrease", Cumulative: 100}, {Name: "small-increase", Cumulative: 1}}}
+	second := ProfileAnalysis{Functions: []FunctionSample{{Name: "small-increase", Cumulative: 11}}}
+	diff := diffProfileSummaries(first, second, 1)
+	if len(diff.Functions) != 1 || diff.Functions[0].Name != "large-decrease" {
+		t.Fatalf("functions = %#v, want largest absolute change", diff.Functions)
+	}
+}
+
+func TestDiffProfilesOrdersByNormalizedChangeWhenRatesAreAvailable(t *testing.T) {
+	first := ProfileAnalysis{DurationNs: int64(time.Second), Functions: []FunctionSample{
+		{Name: "large-rate-change", Cumulative: 100, CumulativePerSecond: 100},
+	}}
+	second := ProfileAnalysis{DurationNs: int64(2 * time.Second), Functions: []FunctionSample{
+		{Name: "large-rate-change", Cumulative: 110, CumulativePerSecond: 55},
+		{Name: "larger-raw-change", Cumulative: 20, CumulativePerSecond: 10},
+	}}
+	diff := diffProfileSummaries(first, second, 1)
+	if len(diff.Functions) != 1 || diff.Functions[0].Name != "large-rate-change" {
+		t.Fatalf("functions = %#v, want largest normalized change", diff.Functions)
+	}
+}
+
+func TestAnalyzeProfileOrdersByAbsoluteCostForDeltaProfiles(t *testing.T) {
+	functions := profileFunctions(&profilepkg.Profile{Sample: []*profilepkg.Sample{
+		profileSample("large-decrease", -100),
+		profileSample("small-increase", 10),
+	}}, 0)
+	if len(functions) != 2 || functions[0].Name != "large-decrease" {
+		t.Fatalf("functions = %#v, want largest absolute cost first", functions)
+	}
+}
+
+func TestParseExpvarsRejectsTrailingJSON(t *testing.T) {
+	if _, err := parseExpvars([]byte(`{} {}`)); err == nil {
+		t.Fatal("trailing JSON must be rejected")
 	}
 }
 
@@ -171,11 +280,8 @@ func TestDiagnoseUsesGoroutineDumpCountWhenRuntimeMetricIsNotPublished(t *testin
 	if err != nil {
 		t.Fatalf("diagnose: %v", err)
 	}
-	if report.Runtime.Goroutines != 3 {
-		t.Fatalf("goroutines = %d, want 3 from goroutine dump", report.Runtime.Goroutines)
-	}
-	if report.Runtime.GoroutineSource != "goroutine_dump" {
-		t.Fatalf("goroutine source = %q, want goroutine_dump", report.Runtime.GoroutineSource)
+	if report.Goroutines.Total != 3 {
+		t.Fatalf("goroutine dump total = %d, want 3", report.Goroutines.Total)
 	}
 }
 
@@ -189,8 +295,8 @@ func TestDiagnosePreservesPublishedZeroGoroutineMetric(t *testing.T) {
 	if err != nil {
 		t.Fatalf("diagnose: %v", err)
 	}
-	if report.Runtime.Goroutines != 0 || report.Runtime.GoroutineSource != "expvar:num_goroutine" {
-		t.Fatalf("runtime = %#v, want published metric preserved", report.Runtime)
+	if numberAt(report.Metrics.After.Runtime, "goroutines", "total") != 0 {
+		t.Fatalf("runtime metrics = %#v, want published zero preserved", report.Metrics.After.Runtime)
 	}
 }
 
@@ -266,6 +372,39 @@ func capturedTestProfile(t *testing.T, id string, allocObjects, inUseSpace int64
 		Metadata: domain.ProfileMetadata{ID: id, Type: "heap"},
 		Data:     data.Bytes(),
 	}
+}
+
+func capturedTimedProfile(t *testing.T, id string, duration time.Duration, value int64) domain.CapturedProfile {
+	t.Helper()
+	function := &profilepkg.Function{ID: 1, Name: "example.com/service.handle"}
+	location := &profilepkg.Location{ID: 1, Line: []profilepkg.Line{{Function: function}}}
+	parsed := &profilepkg.Profile{
+		SampleType: []*profilepkg.ValueType{{Type: "cpu", Unit: "nanoseconds"}}, DefaultSampleType: "cpu",
+		DurationNanos: duration.Nanoseconds(), Function: []*profilepkg.Function{function}, Location: []*profilepkg.Location{location},
+		Sample: []*profilepkg.Sample{{Location: []*profilepkg.Location{location}, Value: []int64{value}}},
+	}
+	var data bytes.Buffer
+	if err := parsed.Write(&data); err != nil {
+		t.Fatalf("write profile: %v", err)
+	}
+	return domain.CapturedProfile{Metadata: domain.ProfileMetadata{ID: id, Type: "cpu"}, Data: data.Bytes()}
+}
+
+func functionByName(t *testing.T, functions []FunctionSample, name string) FunctionSample {
+	t.Helper()
+	for _, function := range functions {
+		if function.Name == name {
+			return function
+		}
+	}
+	t.Fatalf("function %q not found in %#v", name, functions)
+	return FunctionSample{}
+}
+
+func profileSample(name string, value int64) *profilepkg.Sample {
+	function := &profilepkg.Function{Name: name}
+	location := &profilepkg.Location{Line: []profilepkg.Line{{Function: function}}}
+	return &profilepkg.Sample{Location: []*profilepkg.Location{location}, Value: []int64{value}}
 }
 
 func profileWithDefaultSampleOrder(t *testing.T, data []byte, order []int, defaultType string) []byte {

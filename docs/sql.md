@@ -3,6 +3,7 @@
 `gaz-mcp` exposes one read-only tool, `sql_query`, for every SQL environment configured in `environments`. The caller selects both the environment and database for each request; the configured engine is resolved automatically.
 
 For installation and shared configuration, see the [root README](../README.md).
+Agents using this capability can install the self-contained [`gaz-mcp-db` skill](../skills/gaz-mcp-db/SKILL.md).
 
 ## Configuration
 

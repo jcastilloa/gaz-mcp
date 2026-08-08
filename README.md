@@ -12,7 +12,7 @@ It uses stdio transport: one binary, no daemon, and no listener opened by the MC
 |---|---|---|---|
 | SQL | Inspect MySQL and PostgreSQL data without writes | `environments` | [SQL: MySQL and PostgreSQL](docs/sql.md) |
 | Jenkins | Inspect and administer CI/CD, including configuration history | `jenkins`, `snapshot` | [Jenkins](docs/jenkins.md) |
-| Go diagnostics | Capture profiles and inspect goroutines, runtime metrics, and optional SQL pools | Per-call `target` URL | [Go process diagnostics](docs/go-process-diagnostics.md) |
+| Go diagnostics | Capture profiles and inspect goroutines, runtime/process/host/cgroup metrics, and optional SQL pools | Per-call `target` URL | [Go process diagnostics](docs/go-process-diagnostics.md) |
 
 ### Shared properties
 
@@ -23,7 +23,7 @@ It uses stdio transport: one binary, no daemon, and no listener opened by the MC
 - **Jenkins toolset** — 33 tools for jobs, builds, nodes, views, queue, plugins, credentials, script console, and snapshots.
 - **Configuration history** — Jenkins snapshots are held in SQLite for the operations that support capture and rollback.
 - **SHA-256 deduplication** — identical consecutive configuration snapshots are not stored twice.
-- **Go process diagnosis** — pprof profiles, grouped goroutine stacks, expvar runtime statistics, optional `database/sql` pool metrics, and a correlated diagnosis.
+- **Go process diagnosis** — pprof profiles, grouped goroutine stacks, raw runtime/process/host/cgroup metrics, and a separate list of evidence-backed heuristic suspicions.
 - **Structured JSON output** — designed for programmatic consumption.
 - **YAML configuration** — Viper-based configuration, with deployment-time secret rendering.
 - **Hexagonal architecture** — domain, application, and platform layers remain separate.
@@ -62,26 +62,26 @@ curl -fsSL https://raw.githubusercontent.com/jcastilloa/gaz-mcp/master/scripts/i
 
 ### Agent skills
 
-When the MCP is already registered in an MCP client, install the relevant skill so the agent knows the available tools and their operating rules.
+Product-facing agent skills are distributed under [`skills/`](skills/), separately from the `.codex/skills` used to develop this repository:
+
+| Skill | Capability |
+|---|---|
+| [`gaz-mcp-db`](skills/gaz-mcp-db/SKILL.md) | Read-only MySQL and PostgreSQL inspection |
+| [`gaz-mcp-jenkins`](skills/gaz-mcp-jenkins/SKILL.md) | Jenkins operations and configuration history |
+| [`gaz-mcp-diagnostics`](skills/gaz-mcp-diagnostics/SKILL.md) | Go pprof, expvar, metrics, and diagnostic suspicions |
+
+Install the complete directory for every enabled capability. For example, from a gaz-mcp checkout, copy them into a separate project that consumes the MCP:
 
 ```bash
-# Project-level (recommended for teams)
-mkdir -p .claude/skills/gaz-mcp-db
-cp SKILL.md .claude/skills/gaz-mcp-db/SKILL.md
-
-# Global (available in all projects)
-mkdir -p ~/.claude/skills/gaz-mcp-db
-cp SKILL.md ~/.claude/skills/gaz-mcp-db/SKILL.md
+GAZ_MCP_DIR=/path/to/gaz-mcp
+CONSUMER_PROJECT=/path/to/project-using-gaz-mcp
+mkdir -p "$CONSUMER_PROJECT/.codex/skills"
+cp -R "$GAZ_MCP_DIR/skills/gaz-mcp-db" "$CONSUMER_PROJECT/.codex/skills/"
+cp -R "$GAZ_MCP_DIR/skills/gaz-mcp-jenkins" "$CONSUMER_PROJECT/.codex/skills/"
+cp -R "$GAZ_MCP_DIR/skills/gaz-mcp-diagnostics" "$CONSUMER_PROJECT/.codex/skills/"
 ```
 
-| Agent | Project-level path | Global path |
-|---|---|---|
-| Claude Code | `.claude/skills/gaz-mcp-db/SKILL.md` | `~/.claude/skills/gaz-mcp-db/SKILL.md` |
-| Codex | `.codex/skills/gaz-mcp-db/SKILL.md` | `~/.codex/skills/gaz-mcp-db/SKILL.md` |
-| OpenCode | `.opencode/skills/gaz-mcp-db/SKILL.md` | `~/.opencode/skills/gaz-mcp-db/SKILL.md` |
-| Cursor | `.cursor/skills/gaz-mcp-db/SKILL.md` | `~/.cursor/skills/gaz-mcp-db/SKILL.md` |
-
-The SQL skill describes `sql_query`, its read-only boundaries, and schema-discovery patterns. The Jenkins skill documents the Jenkins tools and safe handling of large results. The diagnostic guide above is self-contained for targets that expose `pprof` and `expvar`.
+See the [skills catalog](skills/README.md) for project/global paths in Claude Code, Codex, OpenCode, and Cursor, plus the boundary between product and contributor skills.
 
 ## Configuration
 
@@ -220,6 +220,7 @@ To move the service endpoints from `/debug/...` to a custom prefix, use
 gaz-mcp/
 ├── cmd/server/              # Entry point
 ├── diagnostics/             # Independent service-side instrumentation Go module
+├── skills/                  # Product-facing agent skills distributed to gaz-mcp users
 ├── mcp/
 │   ├── application/
 │   │   ├── diagnostics/     # Go process diagnosis use cases

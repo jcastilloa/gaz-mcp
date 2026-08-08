@@ -20,13 +20,13 @@ var signatures = []signature{
 		},
 	},
 	{
-		code: FindingHTTPInflightFastHTTP, severity: "info",
-		description: "In-flight fasthttp requests share this stack.",
+		code: FindingHTTPConnectionFastHTTP, severity: "info",
+		description: "fasthttp connection handlers share this stack; they may be active or idle.",
 		matches:     func(group GoroutineGroup) bool { return containsStack(group, "fasthttp.(*Server).serveConn") },
 	},
 	{
-		code: FindingHTTPInflightNetHTTP, severity: "info",
-		description: "In-flight net/http requests share this stack.",
+		code: FindingHTTPConnectionNetHTTP, severity: "info",
+		description: "net/http connection handlers share this stack; they may be active or idle.",
 		matches:     func(group GoroutineGroup) bool { return containsStack(group, "net/http.(*conn).serve") },
 	},
 	{
@@ -70,4 +70,13 @@ func containsStack(group GoroutineGroup, pattern string) bool {
 
 func isWaitingState(state string) bool {
 	return state == "semacquire" || state == "chan receive" || state == "select"
+}
+
+func hasFindingCode(findings []Finding, code string) bool {
+	for _, finding := range findings {
+		if strings.EqualFold(finding.Code, code) {
+			return true
+		}
+	}
+	return false
 }

@@ -81,17 +81,20 @@ func buildFlameTree(parsed *profile.Profile, sampleIndex int) *flameNode {
 		root.Value += value
 		node := root
 		for index := len(sample.Location) - 1; index >= 0; index-- {
-			name := locationName(sample.Location[index])
-			if name == "" {
-				continue
+			lines := sample.Location[index].Line
+			for lineIndex := len(lines) - 1; lineIndex >= 0; lineIndex-- {
+				function := lines[lineIndex].Function
+				if function == nil || function.Name == "" {
+					continue
+				}
+				child := node.Children[function.Name]
+				if child == nil {
+					child = &flameNode{Name: function.Name, Children: make(map[string]*flameNode)}
+					node.Children[function.Name] = child
+				}
+				child.Value += value
+				node = child
 			}
-			child := node.Children[name]
-			if child == nil {
-				child = &flameNode{Name: name, Children: make(map[string]*flameNode)}
-				node.Children[name] = child
-			}
-			child.Value += value
-			node = child
 		}
 	}
 	return root

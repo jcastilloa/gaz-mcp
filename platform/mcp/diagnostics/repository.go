@@ -34,18 +34,23 @@ func NewRepository() *Repository {
 	}
 }
 
-func (r *Repository) FetchProfile(ctx context.Context, target, profileType string, seconds int) (domain.FetchResult, error) {
-	endpointName := profileType
-	if profileType == "cpu" {
+func (r *Repository) FetchProfile(ctx context.Context, request domain.ProfileRequest) (domain.FetchResult, error) {
+	endpointName := request.Type
+	if request.Type == "cpu" {
 		endpointName = "profile"
 	}
-	endpoint, err := targetEndpoint(target, path.Join("debug/pprof", endpointName))
+	endpoint, err := targetEndpoint(request.Target, path.Join("debug/pprof", endpointName))
 	if err != nil {
 		return domain.FetchResult{}, err
 	}
-	if profileType == "cpu" {
+	if request.Seconds > 0 || request.ForceGC {
 		query := endpoint.Query()
-		query.Set("seconds", strconv.Itoa(seconds))
+		if request.Seconds > 0 {
+			query.Set("seconds", strconv.Itoa(request.Seconds))
+		}
+		if request.ForceGC {
+			query.Set("gc", "1")
+		}
 		endpoint.RawQuery = query.Encode()
 	}
 	return r.fetch(ctx, endpoint.String())
@@ -170,7 +175,16 @@ func targetEndpoint(target, endpoint string) (*url.URL, error) {
 	if base.Scheme != "http" && base.Scheme != "https" {
 		return nil, fmt.Errorf("target scheme must be http or https")
 	}
+	if base.User != nil {
+		return nil, fmt.Errorf("target must not contain user credentials")
+	}
+	if base.RawQuery != "" || base.Fragment != "" || base.RawFragment != "" {
+		return nil, fmt.Errorf("target must not contain a query or fragment")
+	}
 	base.Path = path.Join(base.Path, endpoint)
+	base.RawPath = ""
 	base.RawQuery = ""
+	base.Fragment = ""
+	base.RawFragment = ""
 	return base, nil
 }

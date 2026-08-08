@@ -30,7 +30,8 @@ func (d Diagnostics) CaptureProfileDefinition() mcp.Tool {
 		mcp.WithDescription("Capture and persist a Go pprof profile from target (HTTP(S) base URL, e.g. http://service:6060). CPU identifies hot paths; heap identifies retained memory; allocs identifies allocation churn; goroutine identifies leaks and blocking; block and mutex identify contention; threadcreate identifies excessive OS threads."),
 		targetParameter(),
 		mcp.WithString("type", mcp.Required(), mcp.Enum("cpu", "heap", "allocs", "goroutine", "block", "mutex", "threadcreate"), mcp.Description("Profile type to capture.")),
-		mcp.WithNumber("seconds", mcp.Description("CPU capture duration in seconds; 1–60, default 10. Ignored for non-CPU profiles."), mcp.Min(1), mcp.Max(diagnosticsApp.MaxCPUProfileSeconds)),
+		mcp.WithNumber("seconds", mcp.Description("Capture duration in seconds (1–60). Defaults to 10 for CPU; for allocs, block, goroutine, heap, mutex and threadcreate it requests a delta profile."), mcp.Min(1), mcp.Max(diagnosticsApp.MaxCPUProfileSeconds)),
+		mcp.WithBoolean("gc", mcp.Description("Run garbage collection immediately before a heap snapshot. Valid only for heap profiles without seconds.")),
 		captureProfileTool(),
 	)
 }
@@ -41,7 +42,9 @@ func (d Diagnostics) CaptureProfileHandler(ctx context.Context, request mcp.Call
 		return result, nil
 	}
 	profileType := strings.TrimSpace(mcp.ParseString(request, "type", ""))
-	metadata, err := d.service.CaptureProfile(ctx, target, profileType, mcp.ParseInt(request, "seconds", 0))
+	metadata, err := d.service.CaptureProfile(ctx, diagnosticsDomain.ProfileRequest{
+		Target: target, Type: profileType, Seconds: mcp.ParseInt(request, "seconds", 0), ForceGC: mcp.ParseBoolean(request, "gc", false),
+	})
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("capture profile: %v", err)), nil
 	}
@@ -50,7 +53,7 @@ func (d Diagnostics) CaptureProfileHandler(ctx context.Context, request mcp.Call
 
 func (d Diagnostics) AnalyzeProfileDefinition() mcp.Tool {
 	return mcp.NewTool("analyze_profile",
-		mcp.WithDescription("Analyze a previously captured pprof profile by ID. Returns top functions ordered by cumulative cost, with flat and cumulative values."),
+		mcp.WithDescription("Analyze a previously captured pprof profile by ID. Returns raw totals, percentages and duration-normalized rates when the profile has a duration."),
 		mcp.WithString("profile_id", mcp.Required(), mcp.Description("ID returned by capture_profile.")),
 		mcp.WithNumber("top_n", mcp.Description("Maximum functions to return; default 20."), mcp.Min(1), mcp.Max(100)),
 		readOnlyTool(),
@@ -71,7 +74,7 @@ func (d Diagnostics) AnalyzeProfileHandler(ctx context.Context, request mcp.Call
 
 func (d Diagnostics) DiffProfilesDefinition() mcp.Tool {
 	return mcp.NewTool("diff_profiles",
-		mcp.WithDescription("Compare two captured pprof profiles of the same primary sample type. Positive values in the result grew from profile A to profile B."),
+		mcp.WithDescription("Compare two captured pprof profiles of the same primary sample type. Returns raw deltas and duration-normalized rate deltas when durations are available."),
 		mcp.WithString("id_a", mcp.Required(), mcp.Description("Earlier or baseline profile ID.")),
 		mcp.WithString("id_b", mcp.Required(), mcp.Description("Later or comparison profile ID.")),
 		mcp.WithNumber("top_n", mcp.Description("Maximum functions to return; default 20."), mcp.Min(1), mcp.Max(100)),
@@ -117,7 +120,7 @@ func (d Diagnostics) GenerateFlamegraphHandler(ctx context.Context, request mcp.
 
 func (d Diagnostics) AnalyzeGoroutinesDefinition() mcp.Tool {
 	return mcp.NewTool("analyze_goroutines",
-		mcp.WithDescription("Fetch target/debug/pprof/goroutine?debug=2, group equivalent stacks, preserve blocked duration, and label known patterns such as database/sql pool waits, HTTP requests, lock contention, and possible goroutine leaks."),
+		mcp.WithDescription("Fetch target/debug/pprof/goroutine?debug=2, group equivalent stacks, preserve blocked duration, and label known patterns such as database/sql pool waits, HTTP connection handlers, lock contention, and possible goroutine leaks."),
 		targetParameter(),
 		readOnlyTool(),
 	)
@@ -200,7 +203,7 @@ func (d Diagnostics) GetExpvarsHandler(ctx context.Context, request mcp.CallTool
 
 func (d Diagnostics) DiagnoseDefinition() mcp.Tool {
 	return mcp.NewTool("diagnose",
-		mcp.WithDescription("Run the Go-process diagnostic sweep: goroutine stacks, expvar runtime stats, and optional database/sql pools. Correlates evidence and directly confirms DB_POOL_EXHAUSTED only when blocked database/sql waiters agree with saturated pool metrics."),
+		mcp.WithDescription("Inspect a Go process and return raw goroutine data plus two expvar metric samples under metrics, separately from heuristic suspicions. Every suspicion includes structured evidence and a verification hint so the caller can evaluate whether it is founded."),
 		targetParameter(),
 		readOnlyTool(),
 	)

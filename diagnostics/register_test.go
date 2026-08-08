@@ -10,8 +10,13 @@ import (
 	"expvar"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
+	runtimedebug "runtime/debug"
 	"strings"
 	"testing"
+	"time"
+
+	profiledata "github.com/google/pprof/profile"
 )
 
 func TestRegisterExposesDefaultPprofAndExpvarRoutes(t *testing.T) {
@@ -84,6 +89,15 @@ func TestRegisterServesPprofAuxiliaryEndpoints(t *testing.T) {
 	}
 }
 
+func TestPprofIndexEscapesCustomProfileNames(t *testing.T) {
+	name := "custom<'profile>"
+	var output bytes.Buffer
+	writePprofLink(&output, name)
+	if strings.Contains(output.String(), name) || !strings.Contains(output.String(), "custom&lt;&#39;profile&gt;") {
+		t.Fatalf("index contains unescaped profile name: %s", output.String())
+	}
+}
+
 func TestRegisterServesSymbolForGetAndPost(t *testing.T) {
 	mux := http.NewServeMux()
 	if err := Register(mux); err != nil {
@@ -123,6 +137,107 @@ func TestRegisterServesCPUProfileAndTrace(t *testing.T) {
 		if response.Header().Get("Content-Type") != "application/octet-stream" {
 			t.Fatalf("%s content type = %q, want application/octet-stream", path, response.Header().Get("Content-Type"))
 		}
+		if disposition := response.Header().Get("Content-Disposition"); disposition == "" {
+			t.Fatalf("%s is missing Content-Disposition", path)
+		}
+	}
+}
+
+func TestRegisterRejectsInvalidDeltaProfileParameters(t *testing.T) {
+	mux := http.NewServeMux()
+	if err := Register(mux); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	for _, path := range []string{
+		"/debug/pprof/heap?seconds=invalid",
+		"/debug/pprof/heap?seconds=1&debug=1",
+	} {
+		response := request(mux, path, "127.0.0.1:1000", "", "")
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("%s status = %d, want %d", path, response.Code, http.StatusBadRequest)
+		}
+	}
+}
+
+func TestRegisterHeapProfileSupportsForcedGC(t *testing.T) {
+	previousGCPercent := runtimedebug.SetGCPercent(-1)
+	t.Cleanup(func() { runtimedebug.SetGCPercent(previousGCPercent) })
+	mux := http.NewServeMux()
+	if err := Register(mux); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	response := request(mux, "/debug/pprof/heap?gc=1", "127.0.0.1:1000", "", "")
+	runtime.ReadMemStats(&after)
+	if response.Code != http.StatusOK {
+		t.Fatalf("heap status = %d, want %d", response.Code, http.StatusOK)
+	}
+	if after.NumGC <= before.NumGC {
+		t.Fatalf("NumGC = %d after request, want greater than %d", after.NumGC, before.NumGC)
+	}
+}
+
+func TestRegisterServesDeltaProfile(t *testing.T) {
+	mux := http.NewServeMux()
+	if err := Register(mux); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	response := request(mux, "/debug/pprof/heap?seconds=1", "127.0.0.1:1000", "", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("heap delta status = %d, want %d: %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if disposition := response.Header().Get("Content-Disposition"); disposition != `attachment; filename="heap-delta"` {
+		t.Fatalf("content disposition = %q", disposition)
+	}
+	if response.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatal("delta profile is missing X-Content-Type-Options")
+	}
+	parsed, err := profiledata.Parse(response.Body)
+	if err != nil {
+		t.Fatalf("parse delta profile: %v", err)
+	}
+	if parsed.DurationNanos < int64(900*time.Millisecond) {
+		t.Fatalf("delta duration = %s, want about one second", time.Duration(parsed.DurationNanos))
+	}
+}
+
+func TestRegisterConfiguresExplicitBlockAndMutexProfiling(t *testing.T) {
+	previousMutexRate := runtime.SetMutexProfileFraction(-1)
+	runtime.SetBlockProfileRate(0)
+	t.Cleanup(func() { runtime.SetBlockProfileRate(0) })
+	t.Cleanup(func() { runtime.SetMutexProfileFraction(previousMutexRate) })
+
+	mux := http.NewServeMux()
+	if err := Register(mux, WithBlockProfileRate(time.Millisecond), WithMutexProfileFraction(7)); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if rate := runtime.SetMutexProfileFraction(-1); rate != 7 {
+		t.Fatalf("mutex profile fraction = %d, want 7", rate)
+	}
+
+	response := request(mux, "/debug/pprof/mutex?debug=1", "127.0.0.1:1000", "", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "sampling period=7") {
+		t.Fatalf("mutex profile response = %d %q", response.Code, response.Body.String())
+	}
+}
+
+func TestRegisterRejectsInvalidProfileSamplingOptions(t *testing.T) {
+	for _, option := range []Option{WithBlockProfileRate(0), WithMutexProfileFraction(0)} {
+		if err := Register(http.NewServeMux(), option); err == nil {
+			t.Fatalf("option %#v should be rejected", option)
+		}
+	}
+}
+
+func TestRegisterRejectsDuplicateNormalizedDBPoolNames(t *testing.T) {
+	database := sql.OpenDB(testConnector{})
+	t.Cleanup(func() { _ = database.Close() })
+	err := Register(http.NewServeMux(), WithDBPool(" primary ", database), WithDBPool("primary", database))
+	if err == nil {
+		t.Fatal("duplicate normalized database pool names should be rejected")
 	}
 }
 

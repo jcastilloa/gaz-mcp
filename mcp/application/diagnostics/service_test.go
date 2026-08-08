@@ -58,84 +58,41 @@ func TestAnalyzeGoroutinesGroupsEquivalentStacksAndDetectsDBPoolExhaustion(t *te
 	if !hasFinding(group.Findings, FindingDBPoolExhausted) {
 		t.Fatalf("findings = %#v, want %q", group.Findings, FindingDBPoolExhausted)
 	}
-	if !hasFinding(group.Findings, FindingHTTPInflightFastHTTP) {
-		t.Fatalf("findings = %#v, want %q", group.Findings, FindingHTTPInflightFastHTTP)
+	if !hasFinding(group.Findings, FindingHTTPConnectionFastHTTP) {
+		t.Fatalf("findings = %#v, want %q", group.Findings, FindingHTTPConnectionFastHTTP)
 	}
 }
 
-func TestDiagnoseConfirmsDBPoolExhaustionWithGoroutinesAndPoolStats(t *testing.T) {
-	goroutines, err := AnalyzeGoroutines(blockedRequests)
+func TestAnalyzeGoroutinesLabelsHTTPConnectionWithoutClaimingActiveRequest(t *testing.T) {
+	report, err := AnalyzeGoroutines(`goroutine 20 [IO wait]:
+internal/poll.runtime_pollWait(0x1, 0x72)
+	/usr/local/go/src/runtime/netpoll.go:351 +0x85
+net/http.(*conn).serve(0xc000100000, {0x1, 0x2})
+	/usr/local/go/src/net/http/server.go:2127 +0x52d
+`)
 	if err != nil {
 		t.Fatalf("analyze goroutines: %v", err)
 	}
-
-	report := BuildDiagnosis(RuntimeStats{Goroutines: 1_240}, goroutines, []DBPoolStats{{
-		Name:               "primary",
-		OpenConnections:    100,
-		InUse:              100,
-		Idle:               0,
-		MaxOpenConnections: 100,
-		WaitCount:          15_340,
-		WaitDuration:       8*time.Minute + 32*time.Second,
-	}})
-
-	if len(report.Conclusions) == 0 {
-		t.Fatal("expected a diagnosis conclusion")
-	}
-	if report.Conclusions[0].Code != FindingDBPoolExhausted {
-		t.Fatalf("conclusion = %q, want %q", report.Conclusions[0].Code, FindingDBPoolExhausted)
-	}
-	if !strings.Contains(report.Conclusions[0].Evidence, "primary") {
-		t.Fatalf("evidence = %q, want pool name", report.Conclusions[0].Evidence)
+	finding := findingByCode(t, report.Groups[0].Findings, FindingHTTPConnectionNetHTTP)
+	if strings.Contains(strings.ToLower(finding.Description), "in-flight") || strings.Contains(strings.ToLower(finding.Description), "request") {
+		t.Fatalf("description %q incorrectly claims an active request", finding.Description)
 	}
 }
 
-func TestDiagnoseDoesNotConfirmPoolExhaustionWithoutPoolMetrics(t *testing.T) {
-	goroutines, err := AnalyzeGoroutines(blockedRequests)
+func TestAnalyzeGoroutinesUsesDeterministicOrderForTies(t *testing.T) {
+	report, err := AnalyzeGoroutines(`goroutine 1 [running]:
+main.zeta()
+	/srv/main.go:2
+
+goroutine 2 [running]:
+main.alpha()
+	/srv/main.go:1
+`)
 	if err != nil {
-		t.Fatalf("analyze goroutines: %v", err)
+		t.Fatal(err)
 	}
-
-	report := BuildDiagnosis(RuntimeStats{}, goroutines, nil)
-	if len(report.Conclusions) != 1 {
-		t.Fatalf("conclusions = %#v, want one suspected conclusion", report.Conclusions)
-	}
-	if report.Conclusions[0].Confidence != ConfidenceSuspected {
-		t.Fatalf("confidence = %q, want %q", report.Conclusions[0].Confidence, ConfidenceSuspected)
-	}
-}
-
-func TestDiagnoseDoesNotSuspectPoolExhaustionWhenExposedPoolsHaveNoWaits(t *testing.T) {
-	goroutines, err := AnalyzeGoroutines(blockedRequests)
-	if err != nil {
-		t.Fatalf("analyze goroutines: %v", err)
-	}
-
-	report := BuildDiagnosis(RuntimeStats{}, goroutines, []DBPoolStats{
-		{Name: "database", MaxOpenConnections: 50},
-		{Name: "database_comments", MaxOpenConnections: 50},
-	})
-	if len(report.Conclusions) != 0 {
-		t.Fatalf("conclusions = %#v, want no conclusion when exposed pools have no waits", report.Conclusions)
-	}
-}
-
-func TestDiagnoseSuspectsPoolExhaustionWhenExposedPoolsHaveWaitsWithoutSaturation(t *testing.T) {
-	goroutines, err := AnalyzeGoroutines(blockedRequests)
-	if err != nil {
-		t.Fatalf("analyze goroutines: %v", err)
-	}
-
-	report := BuildDiagnosis(RuntimeStats{}, goroutines, []DBPoolStats{{
-		Name:               "database",
-		OpenConnections:    4,
-		InUse:              2,
-		Idle:               2,
-		MaxOpenConnections: 50,
-		WaitCount:          1,
-	}})
-	if len(report.Conclusions) != 1 || report.Conclusions[0].Confidence != ConfidenceSuspected {
-		t.Fatalf("conclusions = %#v, want one suspected conclusion", report.Conclusions)
+	if len(report.Groups) != 2 || report.Groups[0].Stack[0] != "main.alpha()" {
+		t.Fatalf("groups = %#v, want stable lexical tie-break", report.Groups)
 	}
 }
 
@@ -159,4 +116,15 @@ func hasFinding(findings []Finding, code string) bool {
 		}
 	}
 	return false
+}
+
+func findingByCode(t *testing.T, findings []Finding, code string) Finding {
+	t.Helper()
+	for _, finding := range findings {
+		if finding.Code == code {
+			return finding
+		}
+	}
+	t.Fatalf("finding %q not found in %#v", code, findings)
+	return Finding{}
 }

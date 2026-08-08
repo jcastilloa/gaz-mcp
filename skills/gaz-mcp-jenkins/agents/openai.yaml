@@ -1,0 +1,4 @@
+interface:
+  display_name: "gaz-mcp Jenkins"
+  short_description: "Inspect and administer Jenkins safely"
+  default_prompt: "Use $gaz-mcp-jenkins to investigate this Jenkins task safely."
