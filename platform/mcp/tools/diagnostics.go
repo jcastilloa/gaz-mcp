@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
+	"time"
 
 	diagnosticsApp "github.com/jcastillo/gaz-mcp/mcp/application/diagnostics"
 	diagnosticsDomain "github.com/jcastillo/gaz-mcp/mcp/domain/diagnostics"
@@ -203,8 +205,10 @@ func (d Diagnostics) GetExpvarsHandler(ctx context.Context, request mcp.CallTool
 
 func (d Diagnostics) DiagnoseDefinition() mcp.Tool {
 	return mcp.NewTool("diagnose",
-		mcp.WithDescription("Inspect a Go process and return raw goroutine data plus two expvar metric samples under metrics, separately from heuristic suspicions. Every suspicion includes structured evidence and a verification hint so the caller can evaluate whether it is founded."),
+		mcp.WithDescription("Inspect a Go process and return raw goroutine and metric samples separately from heuristic suspicions. Defaults to two samples one second apart; three or more samples enable bounded trend analysis and repeated goroutine fingerprints."),
 		targetParameter(),
+		mcp.WithNumber("samples", mcp.Description("Number of samples from 2 to 10. Defaults to 2; values of 3 or more enable trend analysis."), mcp.Min(diagnosticsApp.MinDiagnosticSamples), mcp.Max(diagnosticsApp.MaxDiagnosticSamples), mcp.MultipleOf(1)),
+		mcp.WithNumber("interval_seconds", mcp.Description("Whole seconds between samples, from 1 to 30. Defaults to 1; total sampling duration cannot exceed 60 seconds."), mcp.Min(diagnosticsApp.MinDiagnosticInterval.Seconds()), mcp.Max(diagnosticsApp.MaxDiagnosticInterval.Seconds()), mcp.MultipleOf(1)),
 		readOnlyTool(),
 	)
 }
@@ -214,11 +218,34 @@ func (d Diagnostics) DiagnoseHandler(ctx context.Context, request mcp.CallToolRe
 	if result != nil {
 		return result, nil
 	}
-	report, err := d.service.Diagnose(ctx, target)
+	samples, err := wholeNumberArgument(request, "samples", diagnosticsApp.DefaultDiagnosticSamples)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("diagnose: %v", err)), nil
+	}
+	intervalSeconds, err := wholeNumberArgument(request, "interval_seconds", int(diagnosticsApp.DefaultDiagnosticInterval/time.Second))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("diagnose: %v", err)), nil
+	}
+	report, err := d.service.DiagnoseWithOptions(ctx, target, diagnosticsApp.DiagnosisOptions{Samples: samples, Interval: time.Duration(intervalSeconds) * time.Second})
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("diagnose: %v", err)), nil
 	}
 	return jsonToolResult(report)
+}
+
+func wholeNumberArgument(request mcp.CallToolRequest, name string, defaultValue int) (int, error) {
+	value, present := request.GetArguments()[name]
+	if !present {
+		return defaultValue, nil
+	}
+	number, ok := value.(float64)
+	if ok && number == math.Trunc(number) && number <= math.MaxInt && number >= math.MinInt {
+		return int(number), nil
+	}
+	if integer, ok := value.(int); ok {
+		return integer, nil
+	}
+	return 0, fmt.Errorf("%s must be a whole number", name)
 }
 
 func targetParameter() mcp.ToolOption {

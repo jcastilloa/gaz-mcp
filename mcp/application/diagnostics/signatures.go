@@ -1,6 +1,9 @@
 package diagnostics
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 type signature struct {
 	code        string
@@ -38,16 +41,16 @@ var signatures = []signature{
 		},
 	},
 	{
-		code: FindingPossibleGoroutineLeak, severity: "warning",
-		description: "A large group has remained blocked on a channel.",
+		code: FindingLongLivedGoroutineGroup, severity: "warning",
+		description: "A large group has remained blocked on a channel; one capture cannot establish growth.",
 		hint:        "Verify producers, cancellation paths, and goroutine ownership.",
 		matches: func(group GoroutineGroup) bool {
-			return group.Count >= 10 && group.BlockedFor >= timeToSuspectLeak && (group.State == "chan receive" || group.State == "chan send")
+			return group.Count >= 10 && group.BlockedFor >= longLivedGoroutineDuration && (group.State == "chan receive" || group.State == "chan send")
 		},
 	},
 }
 
-const timeToSuspectLeak = 5 * 60 * 1_000_000_000
+const longLivedGoroutineDuration = 5 * time.Minute
 
 func matchSignatures(group GoroutineGroup) []Finding {
 	findings := make([]Finding, 0, 2)

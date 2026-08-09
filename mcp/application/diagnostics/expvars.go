@@ -48,15 +48,16 @@ func runtimeStatsFromExpvars(vars map[string]any) RuntimeStats {
 }
 
 func dbPoolStatsFromExpvars(vars map[string]any) []DBPoolStats {
+	result := []DBPoolStats{}
 	diagnostics, ok := object(vars["gaz_diagnostics"])
 	if !ok {
-		return nil
+		return result
 	}
 	pools, ok := object(diagnostics["db_pools"])
 	if !ok {
-		return nil
+		return result
 	}
-	result := make([]DBPoolStats, 0, len(pools))
+	result = make([]DBPoolStats, 0, len(pools))
 	for name, value := range pools {
 		pool, ok := object(value)
 		if !ok {

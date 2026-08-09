@@ -117,6 +117,99 @@ func TestDiagnoseReturnsMetricsAndSeparateSuspicions(t *testing.T) {
 	}
 }
 
+func TestDiagnoseAcceptsBoundedSamplingOptions(t *testing.T) {
+	repository := &countingToolTargetRepository{toolTargetRepository: toolTargetRepository{
+		goroutines: []byte("goroutine 1 [running]:\nmain.main()\n\t/srv/main.go:1\n"),
+		expvars:    []byte(`{"gaz_diagnostics":{"runtime":{},"process":{},"cgroup":{}}}`),
+	}}
+	service := diagnosticsApp.NewService(repository, toolProfileStore{})
+	diagnostics := NewDiagnostics(service)
+	request := toolRequest("http://service:6060")
+	arguments := request.Params.Arguments.(map[string]any)
+	arguments["samples"] = 3
+	arguments["interval_seconds"] = 1
+
+	result, err := diagnostics.DiagnoseHandler(context.Background(), request)
+	if err != nil || result.IsError {
+		t.Fatalf("diagnose = %#v, %v", result, err)
+	}
+	if repository.expvarCalls != 3 || repository.goroutineCalls != 3 {
+		t.Fatalf("calls = expvars:%d goroutines:%d, want 3 each", repository.expvarCalls, repository.goroutineCalls)
+	}
+}
+
+func TestDiagnoseSamplingSchemaRequiresWholeNumbers(t *testing.T) {
+	definition := Diagnostics{}.DiagnoseDefinition()
+	for _, name := range []string{"samples", "interval_seconds"} {
+		property, ok := definition.InputSchema.Properties[name].(map[string]any)
+		if !ok || property["multipleOf"] != float64(1) {
+			t.Fatalf("%s schema = %#v, want whole-number constraint", name, property)
+		}
+	}
+}
+
+func TestMetricWindowSerializesZeroIntervalJitter(t *testing.T) {
+	zero := int64(0)
+	data, err := json.Marshal(diagnosticsApp.MetricWindow{Samples: make([]diagnosticsApp.MetricSnapshot, 3), IntervalJitterNs: &zero})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var content map[string]json.RawMessage
+	if err := json.Unmarshal(data, &content); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := content["interval_jitter_ns"]; !ok {
+		t.Fatalf("metric window = %s, zero measured jitter must remain explicit", data)
+	}
+}
+
+func TestMetricWindowOmitsUnavailableIntervalJitter(t *testing.T) {
+	data, err := json.Marshal(diagnosticsApp.MetricWindow{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var content map[string]json.RawMessage
+	if err := json.Unmarshal(data, &content); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := content["interval_jitter_ns"]; ok {
+		t.Fatalf("metric window = %s, two-point or empty windows cannot measure jitter", data)
+	}
+}
+
+func TestDiagnoseRejectsFractionalSamplingOptions(t *testing.T) {
+	repository := &countingToolTargetRepository{toolTargetRepository: toolTargetRepository{
+		goroutines: []byte("goroutine 1 [running]:\nmain.main()\n\t/srv/main.go:1\n"),
+		expvars:    []byte(`{"gaz_diagnostics":{}}`),
+	}}
+	request := toolRequest("http://service:6060")
+	request.Params.Arguments.(map[string]any)["samples"] = 3.5
+
+	result, err := NewDiagnostics(diagnosticsApp.NewService(repository, toolProfileStore{})).DiagnoseHandler(context.Background(), request)
+	if err != nil || !result.IsError {
+		t.Fatalf("diagnose = %#v, %v, want validation error", result, err)
+	}
+	if repository.expvarCalls != 0 || repository.goroutineCalls != 0 {
+		t.Fatalf("calls = expvars:%d goroutines:%d, invalid input must not sample the target", repository.expvarCalls, repository.goroutineCalls)
+	}
+}
+
+type countingToolTargetRepository struct {
+	toolTargetRepository
+	expvarCalls    int
+	goroutineCalls int
+}
+
+func (repository *countingToolTargetRepository) FetchGoroutines(ctx context.Context, target string) (diagnosticsDomain.FetchResult, error) {
+	repository.goroutineCalls++
+	return repository.toolTargetRepository.FetchGoroutines(ctx, target)
+}
+
+func (repository *countingToolTargetRepository) FetchExpvars(ctx context.Context, target string) (diagnosticsDomain.FetchResult, error) {
+	repository.expvarCalls++
+	return repository.toolTargetRepository.FetchExpvars(ctx, target)
+}
+
 func assertStructuredContentIsObject(t *testing.T, result *mcp.CallToolResult, poolCount int) {
 	t.Helper()
 	data, err := json.Marshal(result)

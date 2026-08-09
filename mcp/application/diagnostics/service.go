@@ -12,9 +12,15 @@ import (
 )
 
 const (
-	DefaultCPUProfileSeconds = 10
-	MaxCPUProfileSeconds     = 60
-	diagnosticSampleWindow   = time.Second
+	DefaultCPUProfileSeconds  = 10
+	MaxCPUProfileSeconds      = 60
+	DefaultDiagnosticSamples  = 2
+	MinDiagnosticSamples      = 2
+	MaxDiagnosticSamples      = 10
+	DefaultDiagnosticInterval = time.Second
+	MinDiagnosticInterval     = time.Second
+	MaxDiagnosticInterval     = 30 * time.Second
+	MaxDiagnosticDuration     = 60 * time.Second
 )
 
 var validProfileTypes = map[string]bool{
@@ -105,6 +111,7 @@ func (s Service) AnalyzeGoroutines(ctx context.Context, target string) (Goroutin
 	if err != nil {
 		return GoroutineReport{}, err
 	}
+	report.ObservedAt = s.now()
 	report.Alerts = result.Alerts
 	return report, nil
 }
@@ -150,13 +157,28 @@ func (s Service) GetDBPoolStatsWithAlerts(ctx context.Context, target string) ([
 }
 
 func (s Service) Diagnose(ctx context.Context, target string) (DiagnosisReport, error) {
+	return s.DiagnoseWithOptions(ctx, target, DiagnosisOptions{})
+}
+
+func (s Service) DiagnoseWithOptions(ctx context.Context, target string, options DiagnosisOptions) (DiagnosisReport, error) {
+	options, err := normalizeDiagnosisOptions(options)
+	if err != nil {
+		return DiagnosisReport{}, err
+	}
+	if options.Samples > 2 {
+		return s.diagnoseSeries(ctx, target, options)
+	}
+	return s.diagnoseWindow(ctx, target, options.Interval)
+}
+
+func (s Service) diagnoseWindow(ctx context.Context, target string, interval time.Duration) (DiagnosisReport, error) {
 	goroutines, err := s.AnalyzeGoroutines(ctx, target)
 	var availabilityAlerts []domain.InspectionAlert
 	if err != nil {
 		if ctx.Err() != nil {
 			return DiagnosisReport{}, ctx.Err()
 		}
-		goroutines = GoroutineReport{Groups: []GoroutineGroup{}}
+		goroutines = unavailableGoroutineReport()
 		availabilityAlerts = append(availabilityAlerts, domain.InspectionAlert{
 			Code: "GOROUTINES_UNAVAILABLE", Severity: "info",
 			Description: fmt.Sprintf("The target goroutine profile could not be read; stack-based suspicions are unavailable: %v", err),
@@ -180,7 +202,7 @@ func (s Service) Diagnose(ctx context.Context, target string) (DiagnosisReport, 
 		return report, nil
 	}
 	before := metricSnapshotFromExpvarsAt(beforeVars, s.now())
-	if err := s.wait(ctx, diagnosticSampleWindow); err != nil {
+	if err := s.wait(ctx, interval); err != nil {
 		return DiagnosisReport{}, err
 	}
 	afterVars, afterAlerts, err := s.GetExpvarsWithAlerts(ctx, target)
@@ -195,6 +217,7 @@ func (s Service) Diagnose(ctx context.Context, target string) (DiagnosisReport, 
 			Description: fmt.Sprintf("The second metric sample could not be read; the first sample was reused and rate-based suspicions were skipped: %v", err),
 		})
 		report := DiagnosisReport{Goroutines: goroutines, Metrics: metricWindow(before, after)}
+		report.StructuralChanges = structuralChanges([]MetricSnapshot{before, after})
 		report.Suspicions = analyzeMetricSnapshots(before, after, goroutines)
 		clearGoroutineFindings(&report)
 		report.Alerts = uniqueAlerts(goroutines.Alerts, availabilityAlerts, beforeAlerts, afterAlerts)
@@ -204,11 +227,94 @@ func (s Service) Diagnose(ctx context.Context, target string) (DiagnosisReport, 
 	after := metricSnapshotFromExpvarsAt(afterVars, s.now())
 	report := DiagnosisReport{Goroutines: goroutines}
 	report.Metrics = metricWindow(before, after)
+	report.StructuralChanges = structuralChanges([]MetricSnapshot{before, after})
 	report.Suspicions = analyzeMetricSnapshots(before, after, goroutines)
 	clearGoroutineFindings(&report)
 	report.Alerts = uniqueAlerts(goroutines.Alerts, availabilityAlerts, beforeAlerts, afterAlerts)
 	report.Goroutines.Alerts = nil
 	return report, nil
+}
+
+func normalizeDiagnosisOptions(options DiagnosisOptions) (DiagnosisOptions, error) {
+	if options.Samples == 0 {
+		options.Samples = DefaultDiagnosticSamples
+	}
+	if options.Interval == 0 {
+		options.Interval = DefaultDiagnosticInterval
+	}
+	if options.Samples < MinDiagnosticSamples || options.Samples > MaxDiagnosticSamples {
+		return DiagnosisOptions{}, fmt.Errorf("diagnostic samples must be between %d and %d", MinDiagnosticSamples, MaxDiagnosticSamples)
+	}
+	if options.Interval < MinDiagnosticInterval || options.Interval > MaxDiagnosticInterval {
+		return DiagnosisOptions{}, fmt.Errorf("diagnostic interval must be between %s and %s", MinDiagnosticInterval, MaxDiagnosticInterval)
+	}
+	if time.Duration(options.Samples-1)*options.Interval > MaxDiagnosticDuration {
+		return DiagnosisOptions{}, fmt.Errorf("diagnostic sampling duration must not exceed %.0f seconds", MaxDiagnosticDuration.Seconds())
+	}
+	return options, nil
+}
+
+func (s Service) diagnoseSeries(ctx context.Context, target string, options DiagnosisOptions) (DiagnosisReport, error) {
+	metrics := make([]MetricSnapshot, 0, options.Samples)
+	goroutineSamples := make([]GoroutineReport, 0, options.Samples)
+	var alerts []domain.InspectionAlert
+	for index := 0; index < options.Samples; index++ {
+		goroutines, err := s.AnalyzeGoroutines(ctx, target)
+		goroutinesAvailable := err == nil
+		if err != nil {
+			if ctx.Err() != nil {
+				return DiagnosisReport{}, ctx.Err()
+			}
+			alerts = append(alerts, domain.InspectionAlert{
+				Code: "GOROUTINE_SAMPLE_UNAVAILABLE", Severity: "info",
+				Description: fmt.Sprintf("Goroutine sample %d could not be read: %v", index+1, err),
+			})
+		} else {
+			alerts = append(alerts, goroutines.Alerts...)
+		}
+
+		vars, sampleAlerts, err := s.GetExpvarsWithAlerts(ctx, target)
+		if goroutinesAvailable {
+			goroutineSamples = appendGoroutineSample(goroutineSamples, goroutines)
+		}
+		if err != nil {
+			if ctx.Err() != nil {
+				return DiagnosisReport{}, ctx.Err()
+			}
+			alerts = append(alerts, domain.InspectionAlert{
+				Code: "METRIC_SAMPLE_UNAVAILABLE", Severity: "info",
+				Description: fmt.Sprintf("Metric sample %d could not be read: %v", index+1, err),
+			})
+		} else {
+			metrics = append(metrics, metricSnapshotFromExpvarsAt(vars, s.now()))
+			alerts = append(alerts, sampleAlerts...)
+		}
+		if index+1 < options.Samples {
+			if err := s.wait(ctx, options.Interval); err != nil {
+				return DiagnosisReport{}, err
+			}
+		}
+	}
+	return buildSeriesReport(metrics, goroutineSamples, uniqueAlerts(alerts)), nil
+}
+
+func appendGoroutineSample(samples []GoroutineReport, sample GoroutineReport) []GoroutineReport {
+	if len(samples) > 0 {
+		clearGoroutineDetails(&samples[len(samples)-1])
+	}
+	return append(samples, sample)
+}
+
+func clearGoroutineDetails(report *GoroutineReport) {
+	for index := range report.Groups {
+		report.Groups[index].Stack = nil
+		report.Groups[index].Findings = nil
+	}
+	report.Alerts = nil
+}
+
+func unavailableGoroutineReport() GoroutineReport {
+	return GoroutineReport{Completeness: GoroutineCompletenessUnavailable, Groups: []GoroutineGroup{}}
 }
 
 func waitForSample(ctx context.Context, duration time.Duration) error {

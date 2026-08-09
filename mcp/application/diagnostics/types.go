@@ -7,41 +7,76 @@ import (
 )
 
 const (
-	FindingDBPoolExhausted         = "DB_POOL_EXHAUSTED"
-	FindingHTTPConnectionFastHTTP  = "HTTP_CONNECTION_FASTHTTP"
-	FindingHTTPConnectionNetHTTP   = "HTTP_CONNECTION_NET_HTTP"
-	FindingLockContention          = "LOCK_CONTENTION"
-	FindingPossibleGoroutineLeak   = "POSSIBLE_GOROUTINE_LEAK"
-	FindingFDLimitPressure         = "FD_LIMIT_PRESSURE"
-	FindingPossibleFDLeak          = "POSSIBLE_FD_LEAK"
-	FindingHostMemoryPressure      = "HOST_MEMORY_PRESSURE"
-	FindingHostCPUPressure         = "HOST_CPU_PRESSURE"
-	FindingSystemFileTablePressure = "SYSTEM_FILE_TABLE_PRESSURE"
-	FindingCgroupMemoryPressure    = "CGROUP_MEMORY_PRESSURE"
-	FindingMemoryLimitMismatch     = "GO_MEMORY_LIMIT_MISMATCH"
-	FindingNativeMemoryPressure    = "NATIVE_MEMORY_PRESSURE"
-	FindingGCPressure              = "GC_PRESSURE"
-	FindingCPUThrottled            = "CPU_THROTTLED"
-	FindingSchedulerPressure       = "SCHEDULER_PRESSURE"
-	FindingMutexContention         = "MUTEX_CONTENTION"
-	FindingPIDPressure             = "PID_LIMIT_PRESSURE"
+	FindingDBPoolExhausted          = "DB_POOL_EXHAUSTED"
+	FindingHTTPConnectionFastHTTP   = "HTTP_CONNECTION_FASTHTTP"
+	FindingHTTPConnectionNetHTTP    = "HTTP_CONNECTION_NET_HTTP"
+	FindingLockContention           = "LOCK_CONTENTION"
+	FindingLongLivedGoroutineGroup  = "LONG_LIVED_GOROUTINE_GROUP"
+	FindingPossibleGoroutineLeak    = "POSSIBLE_GOROUTINE_LEAK"
+	FindingFDLimitPressure          = "FD_LIMIT_PRESSURE"
+	FindingFDGrowthBurst            = "FD_GROWTH_BURST"
+	FindingPossibleFDLeak           = "POSSIBLE_FD_LEAK"
+	FindingHostMemoryPressure       = "HOST_MEMORY_PRESSURE"
+	FindingHostCPUPressure          = "HOST_CPU_PRESSURE"
+	FindingSystemFileTablePressure  = "SYSTEM_FILE_TABLE_PRESSURE"
+	FindingCgroupMemoryPressure     = "CGROUP_MEMORY_PRESSURE"
+	FindingMemoryLimitMismatch      = "GO_MEMORY_LIMIT_MISMATCH"
+	FindingNativeMemoryGrowthBurst  = "NATIVE_MEMORY_GROWTH_BURST"
+	FindingPossibleNativeMemoryLeak = "POSSIBLE_NATIVE_MEMORY_LEAK"
+	FindingGCPressure               = "GC_PRESSURE"
+	FindingCPUThrottled             = "CPU_THROTTLED"
+	FindingSchedulerPressure        = "SCHEDULER_PRESSURE"
+	FindingMutexContention          = "MUTEX_CONTENTION"
+	FindingPIDPressure              = "PID_LIMIT_PRESSURE"
 
 	ConfidenceConfirmed = "confirmed"
 	ConfidenceSuspected = "suspected"
+
+	ScopeHost         = "host"
+	ScopeCgroup       = "cgroup"
+	ScopeProcess      = "process"
+	ScopeRuntime      = "runtime"
+	ScopeGoroutine    = "goroutine"
+	ScopeDatabasePool = "database_pool"
+
+	GoroutineCompletenessComplete    = "complete"
+	GoroutineCompletenessPartial     = "partial"
+	GoroutineCompletenessUnavailable = "unavailable"
 )
 
 type GoroutineReport struct {
-	Total  int                      `json:"total"`
-	Groups []GoroutineGroup         `json:"groups"`
-	Alerts []domain.InspectionAlert `json:"alerts,omitempty"`
+	ObservedAt      time.Time                `json:"observed_at,omitzero"`
+	Total           int                      `json:"total"`
+	BlocksParsed    int                      `json:"blocks_parsed"`
+	BlocksDiscarded int                      `json:"blocks_discarded"`
+	Completeness    string                   `json:"completeness"`
+	Groups          []GoroutineGroup         `json:"groups"`
+	Alerts          []domain.InspectionAlert `json:"alerts,omitempty"`
+}
+
+type GoroutineSample struct {
+	ObservedAt      time.Time              `json:"observed_at"`
+	Total           int                    `json:"total"`
+	BlocksParsed    int                    `json:"blocks_parsed"`
+	BlocksDiscarded int                    `json:"blocks_discarded"`
+	Completeness    string                 `json:"completeness"`
+	Groups          []GoroutineSampleGroup `json:"groups"`
+}
+
+type GoroutineSampleGroup struct {
+	Fingerprint string        `json:"fingerprint"`
+	Count       int           `json:"count"`
+	State       string        `json:"state"`
+	BlockedFor  time.Duration `json:"blocked_for_ns,omitempty"`
 }
 
 type GoroutineGroup struct {
-	Count      int           `json:"count"`
-	State      string        `json:"state"`
-	BlockedFor time.Duration `json:"blocked_for_ns,omitempty"`
-	Stack      []string      `json:"stack"`
-	Findings   []Finding     `json:"findings,omitempty"`
+	Fingerprint string        `json:"fingerprint"`
+	Count       int           `json:"count"`
+	State       string        `json:"state"`
+	BlockedFor  time.Duration `json:"blocked_for_ns,omitempty"`
+	Stack       []string      `json:"stack"`
+	Findings    []Finding     `json:"findings,omitempty"`
 }
 
 type Finding struct {
@@ -79,16 +114,21 @@ type DBPoolStats struct {
 }
 
 type DiagnosisReport struct {
-	Metrics    MetricWindow             `json:"metrics"`
-	Goroutines GoroutineReport          `json:"goroutines"`
-	Suspicions []Suspicion              `json:"suspicions"`
-	Alerts     []domain.InspectionAlert `json:"alerts,omitempty"`
+	Metrics                   MetricWindow             `json:"metrics"`
+	Goroutines                GoroutineReport          `json:"goroutines"`
+	GoroutineSamples          []GoroutineSample        `json:"goroutine_samples,omitempty"`
+	GoroutineIntervalJitterNs *int64                   `json:"goroutine_interval_jitter_ns,omitempty"`
+	StructuralChanges         []StructuralChange       `json:"structural_changes,omitempty"`
+	Suspicions                []Suspicion              `json:"suspicions"`
+	Alerts                    []domain.InspectionAlert `json:"alerts,omitempty"`
 }
 
 type MetricWindow struct {
-	Before     MetricSnapshot `json:"before"`
-	After      MetricSnapshot `json:"after"`
-	DurationNs int64          `json:"duration_ns"`
+	Before           MetricSnapshot   `json:"before"`
+	After            MetricSnapshot   `json:"after"`
+	Samples          []MetricSnapshot `json:"samples,omitempty"`
+	DurationNs       int64            `json:"duration_ns"`
+	IntervalJitterNs *int64           `json:"interval_jitter_ns,omitempty"`
 }
 
 type MetricSnapshot struct {
@@ -106,9 +146,34 @@ type Suspicion struct {
 	Code       string           `json:"code"`
 	Severity   string           `json:"severity"`
 	Confidence string           `json:"confidence"`
+	Scope      string           `json:"scope"`
 	Reason     string           `json:"reason"`
 	Evidence   []MetricEvidence `json:"evidence"`
+	Criteria   []Criterion      `json:"criteria"`
 	Verify     string           `json:"verify"`
+}
+
+type Criterion struct {
+	Name      string `json:"name"`
+	Observed  any    `json:"observed"`
+	Operator  string `json:"operator"`
+	Threshold any    `json:"threshold"`
+	Unit      string `json:"unit"`
+	Required  bool   `json:"required"`
+	Matched   bool   `json:"matched"`
+}
+
+type StructuralChange struct {
+	ObservedAt time.Time `json:"observed_at"`
+	Metric     string    `json:"metric"`
+	Scope      string    `json:"scope"`
+	Previous   any       `json:"previous"`
+	Value      any       `json:"value"`
+}
+
+type DiagnosisOptions struct {
+	Samples  int
+	Interval time.Duration
 }
 
 type MetricEvidence struct {

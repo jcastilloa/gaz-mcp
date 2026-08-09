@@ -47,8 +47,14 @@ func TestAnalyzeGoroutinesGroupsEquivalentStacksAndDetectsDBPoolExhaustion(t *te
 	if len(report.Groups) != 2 {
 		t.Fatalf("groups = %d, want 2", len(report.Groups))
 	}
+	if report.BlocksParsed != 3 || report.BlocksDiscarded != 0 || report.Completeness != GoroutineCompletenessComplete {
+		t.Fatalf("parse metadata = %#v, want complete three-block dump", report)
+	}
 
 	group := report.Groups[0]
+	if group.Fingerprint == "" {
+		t.Fatalf("group = %#v, want stable fingerprint", group)
+	}
 	if group.Count != 2 {
 		t.Fatalf("group count = %d, want 2", group.Count)
 	}
@@ -60,6 +66,16 @@ func TestAnalyzeGoroutinesGroupsEquivalentStacksAndDetectsDBPoolExhaustion(t *te
 	}
 	if !hasFinding(group.Findings, FindingHTTPConnectionFastHTTP) {
 		t.Fatalf("findings = %#v, want %q", group.Findings, FindingHTTPConnectionFastHTTP)
+	}
+}
+
+func TestAnalyzeGoroutinesReportsDiscardedBlocks(t *testing.T) {
+	report, err := AnalyzeGoroutines("not a goroutine\n\n" + blockedRequests)
+	if err != nil {
+		t.Fatalf("analyze goroutines: %v", err)
+	}
+	if report.BlocksParsed != 3 || report.BlocksDiscarded != 1 || report.Completeness != GoroutineCompletenessPartial {
+		t.Fatalf("parse metadata = %#v, want one discarded block", report)
 	}
 }
 

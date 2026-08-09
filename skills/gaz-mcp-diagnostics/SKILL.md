@@ -64,6 +64,7 @@ Keep the boundary clear: the service-side module publishes raw observations. It 
 ## Choose the first tool
 
 - Start broad with `diagnose(target)` when the cause is unknown. It returns raw observations and separate heuristic suspicions.
+- Use `diagnose(target, samples=3..10, interval_seconds=1..30)` only when sustained FD, RSS, or goroutine growth matters. Both parameters are whole numbers. It repeats goroutine dumps, is capped at 60 seconds total configured duration, and costs more on the target than the default diagnosis.
 - Use `analyze_goroutines(target)` for blocking, leaks, connection waiters, or lock contention.
 - Use `get_runtime_stats(target)` for a compact standard-runtime view.
 - Use `get_db_pool_stats(target)` for instrumented `database/sql` pools.
@@ -75,8 +76,8 @@ Keep the boundary clear: the service-side module publishes raw observations. It 
 `diagnose` deliberately separates:
 
 - `metrics.before` and `metrics.after`: raw runtime, process, host, cgroup, SQL-pool, and custom values.
-- `goroutines`: grouped stack observations.
-- `suspicions`: heuristic candidates with severity, confidence, evidence, reason, and a verification hint.
+- `goroutines`: the latest grouped stack observations and parse completeness. Multi-sample mode adds compact earlier fingerprint/count samples, source-specific observation timestamps, and separate interval jitter for metric and goroutine series.
+- `suspicions`: heuristic candidates with severity, confidence, scope, evidence, evaluated criteria, reason, and a verification hint.
 
 Treat metrics and stacks as observations. Treat every suspicion, including one marked `confirmed`, as a hypothesis supported by multiple signals rather than an established root cause. Check its evidence, consider workload and container context, and use the `verify` hint or a focused profile before concluding.
 
@@ -110,8 +111,9 @@ Block and mutex profiles can be empty unless runtime sampling was enabled in the
 ## Verification patterns
 
 - High RSS with stable Go memory: inspect cgroup headroom and validate possible native, cgo, or mmap growth rather than blaming the Go heap.
-- SQL pool suspicion: correlate waiter stacks with pool saturation and wait deltas. With several pools, stacks cannot identify the responsible `*sql.DB` instance.
-- Goroutine leak suspicion: compare the same stack fingerprint over time; one large stable worker group may be intentional.
+- SQL pool suspicion: correlate waiter stacks with named-pool saturation and new wait-count activity. Wait duration only records completed waits; a duration-only delta without current saturation is warning evidence. Saturation plus waiter stacks stays critical evidence if counters are unchanged, but remains suspected. With several saturated active pools, stacks cannot identify the responsible `*sql.DB` instance.
+- `FD_GROWTH_BURST`, `NATIVE_MEMORY_GROWTH_BURST`, and `LONG_LIVED_GOROUTINE_GROUP` describe one short window or capture; do not call them leaks.
+- A possible leak requires at least three samples over ten observed seconds, with sustained growth of FDs, RSS, or the same complete goroutine fingerprint. Metric and goroutine trends remain independent when one endpoint fails. Every qualifying growing fingerprint is reported; stable long-lived groups remain separate suspicions. Earlier goroutine samples are compact fingerprint/count series; the latest report retains full stacks. One large stable worker group may be intentional.
 - File-descriptor pressure: verify both open-FD ratio and trend; the instrumentation exposes counts, not paths.
 - Scheduler or throttling pressure: correlate runnable goroutines, GOMAXPROCS, cgroup throttling deltas, and a CPU profile.
 

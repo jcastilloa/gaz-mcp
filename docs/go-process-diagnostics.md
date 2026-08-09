@@ -242,11 +242,11 @@ certificates remain errors.
 | `analyze_profile` | `profile_id`, `top_n?` | Return functions ordered by absolute cumulative cost, including raw values, percentages, and per-second rates when the profile carries a duration. `top_n` defaults to 20 and is limited to 1–100. |
 | `diff_profiles` | `id_a`, `id_b`, `top_n?` | Compare two stored profiles with the same primary sample type and unit. Returns raw deltas and duration-normalized rate deltas when both durations are available. |
 | `generate_flamegraph` | `profile_id` | Generate an SVG flame graph from a stored profile. |
-| `analyze_goroutines` | `target` | Fetch `goroutine?debug=2`, group equivalent stacks, retain state and blocked duration, and label known signatures. |
+| `analyze_goroutines` | `target` | Fetch `goroutine?debug=2`, group equivalent stacks by a stable fingerprint, retain state and blocked duration, report parse completeness, and label known signatures. |
 | `get_runtime_stats` | `target` | Read `num_goroutine`, optional `num_threads`, and expvar `memstats`/GC values. |
 | `get_db_pool_stats` | `target` | Read the optional `gaz_diagnostics.db_pools` contract. Returns `{ "pools": [...] }`; a target without it returns an empty `pools` array. |
 | `get_expvars` | `target` | Return the complete JSON object from `/debug/vars`, including service-specific variables. |
-| `diagnose` | `target` | Return two raw metric samples and grouped goroutines, plus a separate list of heuristic suspicions with structured evidence and verification hints. |
+| `diagnose` | `target`, `samples?`, `interval_seconds?` | Return raw metrics and goroutines separately from heuristic suspicions. Defaults to two samples one second apart; 3–10 samples enable bounded trend and fingerprint analysis. Sampling parameters are whole numbers and total configured sampling time cannot exceed 60 seconds. |
 
 Captured profiles are stored locally under the operating system temporary directory (`<temp>/gaz-mcp/pprof`) with restrictive permissions. A `profile_id` is therefore usable by the same `gaz-mcp` installation while those files remain present; it is not a portable or permanent profile reference.
 
@@ -280,16 +280,39 @@ interpretation:
   process, host, cgroup, pool, and custom values. Each sample records the MCP
   `observed_at` timestamp and preserves target `collected_at` when published;
   `metrics.duration_ns` is calculated from the MCP clock.
-- `goroutines` contains the grouped stack evidence without heuristic labels
-  mixed into the groups.
+- `goroutines` contains the latest grouped stack evidence without heuristic
+  labels mixed into the groups. It also reports parsed/discarded block counts
+  and `complete`, `partial`, or `unavailable` parse status.
 - `suspicions` contains heuristic candidates. Each has a code, severity,
-  confidence, reason, structured evidence, and a `verify` hint.
+  confidence, scope, reason, structured evidence, evaluated criteria with
+  thresholds and units, and a `verify` hint.
 
 This lets an AI or operator reject a suspicion after inspecting the underlying
 facts. If `/debug/vars` cannot be read, `diagnose` still returns goroutine data;
 if the goroutine profile cannot be read, it still returns metric evidence. The
 missing source is identified by an informational alert. The individual focused
 tools remain strict and return an error when their endpoint is unavailable.
+
+For growth investigations, opt into multiple samples:
+
+```text
+diagnose(target="http://orders.internal:6060", samples=5, interval_seconds=5)
+```
+
+This adds `metrics.samples`, source-specific metric and goroutine interval
+jitter (including an explicit zero when measured), compact timestamped
+goroutine fingerprint/count series, structural changes, and trend-based
+suspicions. Metric and goroutine samples use their own observation timestamps.
+The latest `goroutines` report retains the full stacks;
+earlier captures are reduced in memory to the fingerprint data needed by the
+trend. Repeated
+`goroutine?debug=2` captures have a real cost on processes with many
+goroutines, so this mode is explicit and bounded. Trend slopes use the actual
+observation timestamps; minimum net growth and relaxed monotonicity prevent a
+single jump followed by a plateau from being called a leak. Leak-labelled
+suspicions also require at least ten seconds of actual observed time. Metric
+and goroutine trends degrade independently: losing `/debug/vars` does not
+discard a complete goroutine series, and vice versa.
 
 ### Capture and inspect CPU work
 
@@ -328,9 +351,16 @@ diagnose(target="http://orders.internal:6060")
 
 Without the optional pool instrumentation, a `database/sql` waiter remains
 useful evidence but the suspicion is only `suspected`. With one instrumented
-pool, matching blocked stacks, current saturation, and wait activity can raise
-its confidence to `confirmed`. With multiple pools it remains suspected
-because a stack cannot identify which `*sql.DB` instance caused the wait.
+pool, matching blocked stacks, current saturation, and new `WaitCount` activity can raise
+its confidence to `confirmed`. With multiple pools, confidence can still rise
+when exactly one pool is saturated with activity and it has new waits. If
+several saturated pools have activity it remains suspected because stacks
+cannot identify the responsible `*sql.DB`. `WaitDuration` corroborates
+completed waits but is not required: it changes only after a wait finishes. A
+duration-only delta without current saturation is warning evidence, not a
+critical current incident. Conversely, matching waiter stacks plus a currently
+saturated named pool remain critical evidence even if its cumulative wait
+counters do not advance inside the short window; confidence stays `suspected`.
 
 ## Heuristics and diagnosis limits
 
@@ -342,28 +372,36 @@ because a stack cannot identify which `*sql.DB` instance caused the wait.
 | `HTTP_CONNECTION_FASTHTTP` | Stack contains `fasthttp.(*Server).serveConn` | `fasthttp` connection handlers share the stack; connections may be active or idle. |
 | `HTTP_CONNECTION_NET_HTTP` | Stack contains `net/http.(*conn).serve` | Standard-library HTTP connection handlers share the stack; connections may be active or idle. |
 | `LOCK_CONTENTION` | More than one goroutine and a mutex-lock stack frame | Several goroutines contend on a mutex. |
-| `POSSIBLE_GOROUTINE_LEAK` | At least 10 goroutines blocked on channel send/receive for at least five minutes | A large, long-lived blocked group may be leaking. |
+| `LONG_LIVED_GOROUTINE_GROUP` | At least 10 goroutines blocked on channel send/receive for at least five minutes | One capture found a large, old blocked group but cannot establish growth. |
 
-`diagnose` uses the two metric samples and goroutine stacks to generate these
-separate suspicions:
+The default two-sample `diagnose` uses metric deltas and one goroutine dump to
+generate these separate suspicions:
 
 | Suspicion | Trigger evidence |
 |---|---|
 | `FD_LIMIT_PRESSURE` | Open files reach at least 80% of the soft descriptor limit |
-| `POSSIBLE_FD_LEAK` | Open files grow materially during the sample window |
+| `FD_GROWTH_BURST` | Open files grow materially during the two-sample window; this does not establish a leak |
 | `HOST_MEMORY_PRESSURE` | The host has at most 10% of physical memory available |
 | `HOST_CPU_PRESSURE` | Host CPU PSI reports tasks delayed during at least 20% of the latest 10-second window |
 | `SYSTEM_FILE_TABLE_PRESSURE` | The host uses at least 80% of its global file-handle table |
 | `CGROUP_MEMORY_PRESSURE` | Current cgroup memory reaches at least 85% of its limit, or new OOM/OOM-kill events occur |
 | `GO_MEMORY_LIMIT_MISMATCH` | Go's memory limit leaves almost no cgroup headroom |
-| `NATIVE_MEMORY_PRESSURE` | RSS grows by at least 32 MiB without comparable Go runtime-memory growth |
+| `NATIVE_MEMORY_GROWTH_BURST` | RSS grows by at least 32 MiB without comparable Go runtime-memory growth in one window |
 | `CPU_THROTTLED` | At least 10% of observed cgroup CPU periods and at least 1% of the sample window are throttled |
 | `GC_PRESSURE` | GC consumes at least 25% of measured Go CPU while allocation continues |
 | `SCHEDULER_PRESSURE` | Runnable goroutines exceed GOMAXPROCS in both samples |
 | `MUTEX_CONTENTION` | Mutex wait time grows materially in the window; matching blocked stacks increase confidence |
 | `PID_LIMIT_PRESSURE` | The cgroup reaches at least 80% of its PID limit |
-| `DB_POOL_EXHAUSTED` | Current pool saturation, new waits, and/or matching `database/sql` waiter stacks |
-| `LOCK_CONTENTION`, `POSSIBLE_GOROUTINE_LEAK` | Matching grouped-stack signatures |
+| `DB_POOL_EXHAUSTED` | Current pool saturation, current-window wait activity, and/or matching `database/sql` waiter stacks. Unsaturated wait history remains a warning; saturation plus stacks without a new counter delta remains critical but suspected. |
+| `LOCK_CONTENTION`, `LONG_LIVED_GOROUTINE_GROUP` | Matching grouped-stack signatures |
+
+With at least three complete samples, `diagnose` can additionally emit:
+
+| Suspicion | Trend evidence |
+|---|---|
+| `POSSIBLE_FD_LEAK` | Positive timestamp-based slope, material net growth, and growth in at least 60% of intervals |
+| `POSSIBLE_NATIVE_MEMORY_LEAK` | Sustained RSS growth without comparable Go runtime-memory growth |
+| `POSSIBLE_GOROUTINE_LEAK` | The same long-lived blocked stack fingerprint grows materially across complete samples; every qualifying fingerprint is reported |
 
 Counter heuristics use deltas, not historical totals: an old throttling or pool
 wait counter does not by itself describe current pressure. Growth heuristics
@@ -371,11 +409,18 @@ are skipped if either sample lacks the required metric. A `confirmed`
 confidence still appears under `suspicions`; it means multiple independent
 signals agree, not that the MCP has declared the root cause.
 
-For `DB_POOL_EXHAUSTED`, confirmation requires exactly one exposed pool,
-blocked `database/sql` waiter stacks, `max_open_connections > 0`,
-`in_use >= max_open_connections`, `idle == 0`, and a nonzero wait counter.
-With multiple pools, stack-to-pool attribution is unavailable and confidence
-remains `suspected`.
+For `DB_POOL_EXHAUSTED`, confirmation requires blocked `database/sql` waiter
+stacks and exactly one active saturated pool with `max_open_connections > 0`,
+`in_use >= max_open_connections`, `idle == 0`, and new `WaitCount` activity in
+the sample window. Other pools may be published, but if several saturated
+pools have current-window wait activity the result remains `suspected`.
+
+Every suspicion identifies its `scope`: `host`, `cgroup`, `process`,
+`runtime`, `goroutine`, or `database_pool`. Host findings remain valid
+environmental observations even when they cannot be attributed to the target
+process. Changes to GOMAXPROCS, cgroup limits, and pool maxima are returned as
+structural context rather than automatically invalidating otherwise coherent
+observations.
 
 `get_runtime_stats` remains a compact view over standard `memstats`,
 `num_goroutine`, and optional `num_threads`. Use `get_expvars` for the complete

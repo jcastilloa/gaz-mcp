@@ -2,6 +2,7 @@ package diagnostics
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"sort"
@@ -19,7 +20,7 @@ type parsedGoroutine struct {
 }
 
 func AnalyzeGoroutines(dump string) (GoroutineReport, error) {
-	items, err := parseGoroutineDump(dump)
+	items, discarded, err := parseGoroutineDump(dump)
 	if err != nil {
 		return GoroutineReport{}, err
 	}
@@ -34,23 +35,33 @@ func AnalyzeGoroutines(dump string) (GoroutineReport, error) {
 		}
 		return groups[i].Count > groups[j].Count
 	})
-	return GoroutineReport{Total: len(items), Groups: groups}, nil
+	completeness := GoroutineCompletenessComplete
+	if discarded > 0 {
+		completeness = GoroutineCompletenessPartial
+	}
+	return GoroutineReport{
+		Total: len(items), BlocksParsed: len(items), BlocksDiscarded: discarded,
+		Completeness: completeness, Groups: groups,
+	}, nil
 }
 
-func parseGoroutineDump(dump string) ([]parsedGoroutine, error) {
+func parseGoroutineDump(dump string) ([]parsedGoroutine, int, error) {
 	dump = strings.ReplaceAll(dump, "\r\n", "\n")
 	blocks := strings.Split(strings.TrimSpace(dump), "\n\n")
 	items := make([]parsedGoroutine, 0, len(blocks))
+	discarded := 0
 	for _, block := range blocks {
 		item, ok := parseGoroutineBlock(block)
 		if ok {
 			items = append(items, item)
+		} else {
+			discarded++
 		}
 	}
 	if len(items) == 0 {
-		return nil, fmt.Errorf("no goroutines found in debug=2 response")
+		return nil, discarded, fmt.Errorf("no goroutines found in debug=2 response")
 	}
-	return items, nil
+	return items, discarded, nil
 }
 
 func parseGoroutineBlock(block string) (parsedGoroutine, bool) {
@@ -103,7 +114,7 @@ func groupGoroutines(items []parsedGoroutine) []GoroutineGroup {
 		key := stackKey(item)
 		group, exists := groups[key]
 		if !exists {
-			group = GoroutineGroup{State: item.state, BlockedFor: item.blockedFor, Stack: item.stack}
+			group = GoroutineGroup{Fingerprint: hex.EncodeToString(key[:]), State: item.state, BlockedFor: item.blockedFor, Stack: item.stack}
 		}
 		group.Count++
 		if item.blockedFor > group.BlockedFor {
