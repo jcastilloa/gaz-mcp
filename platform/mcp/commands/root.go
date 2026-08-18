@@ -28,6 +28,7 @@ type Runner struct {
 	server          *mcpserver.Server
 	sqlTool         tools.SQLQuery
 	diagnosticsTool tools.Diagnostics
+	imageTool       *tools.ImageGeneration
 	jenkinsTools    JenkinsTools
 	hasJenkins      bool
 }
@@ -39,6 +40,7 @@ func NewRunner(
 	server *mcpserver.Server,
 	sqlTool tools.SQLQuery,
 	diagnosticsTool tools.Diagnostics,
+	imageTool *tools.ImageGeneration,
 	jenkinsTools JenkinsTools,
 ) Runner {
 	// hasJenkins is true when at least one Jenkins environment is configured.
@@ -51,6 +53,7 @@ func NewRunner(
 		server:          server,
 		sqlTool:         sqlTool,
 		diagnosticsTool: diagnosticsTool,
+		imageTool:       imageTool,
 		jenkinsTools:    jenkinsTools,
 		hasJenkins:      hasJenkins,
 	}
@@ -95,6 +98,13 @@ func (r Runner) runServer() func(cmd *cobra.Command, args []string) error {
 		r.server.AddTool(diagnostics.GetDBPoolStatsDefinition(), diagnostics.GetDBPoolStatsHandler)
 		r.server.AddTool(diagnostics.GetExpvarsDefinition(), diagnostics.GetExpvarsHandler)
 		r.server.AddTool(diagnostics.DiagnoseDefinition(), diagnostics.DiagnoseHandler)
+
+		// --- Image generation tools (only when models are configured) ---
+		if r.imageTool != nil {
+			images := *r.imageTool
+			r.server.AddTool(images.ModelListDefinition(), images.ModelListHandler)
+			r.server.AddTool(images.GenerateDefinition(), images.GenerateHandler)
+		}
 
 		// --- Jenkins tools (only when environments are configured) ---
 		if r.hasJenkins {

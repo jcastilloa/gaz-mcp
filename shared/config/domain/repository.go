@@ -8,4 +8,5 @@ type Repository interface {
 	ServiceConfig() ServiceConfig
 	JenkinsEnvironments() map[string]JenkinsEnvironmentConfig
 	SnapshotConfig() SnapshotConfig
+	ImageGenerationConfig() ImageGenerationConfig
 }

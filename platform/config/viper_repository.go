@@ -40,6 +40,9 @@ func New(serviceName string) (configDomain.Repository, error) {
 			return nil, fmt.Errorf("read config: %w", err)
 		}
 	}
+	if err := validateImageGenerationConfig(v); err != nil {
+		return nil, fmt.Errorf("invalid image_generation config: %w", err)
+	}
 
 	return &ViperRepository{v: v}, nil
 }
@@ -127,6 +130,15 @@ func (r *ViperRepository) SnapshotConfig() configDomain.SnapshotConfig {
 	}
 }
 
+func (r *ViperRepository) ImageGenerationConfig() configDomain.ImageGenerationConfig {
+	return configDomain.ImageGenerationConfig{
+		APIKey:  expandEnvironment(r.v.GetString("image_generation.api_key")),
+		BaseURL: r.v.GetString("image_generation.base_url"),
+		Timeout: r.v.GetDuration("image_generation.timeout"),
+		Models:  r.v.GetStringSlice("image_generation.models"),
+	}
+}
+
 func stringVal(m map[string]any, key string) string {
 	if v, ok := m[key]; ok {
 		if s, ok := v.(string); ok {
@@ -188,4 +200,8 @@ func intOrDefault(val, defaultVal int) int {
 		return defaultVal
 	}
 	return val
+}
+
+func expandEnvironment(value string) string {
+	return os.ExpandEnv(value)
 }

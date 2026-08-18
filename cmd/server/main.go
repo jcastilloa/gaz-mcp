@@ -20,9 +20,10 @@ func main() {
 	environments := cfgRepo.Environments()
 	jenkinsEnvs := cfgRepo.JenkinsEnvironments()
 	snapshotCfg := cfgRepo.SnapshotConfig()
+	imageCfg := cfgRepo.ImageGenerationConfig()
 	openaiRepo := openai.NewOpenAIRepository(cfgRepo.OpenAIProviderConfig(), nil)
 
-	containerBuilder := containerdi.New(openaiRepo, "gaz-mcp", serviceCfg, environments, jenkinsEnvs, snapshotCfg, buildinfo.NormalizedVersion())
+	containerBuilder := containerdi.New(openaiRepo, "gaz-mcp", serviceCfg, environments, jenkinsEnvs, snapshotCfg, imageCfg, buildinfo.NormalizedVersion())
 	container, err := containerBuilder.Build()
 	if err != nil {
 		log.Fatal(err)

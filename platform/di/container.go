@@ -4,12 +4,14 @@ import (
 	"fmt"
 
 	diagnosticsApp "github.com/jcastillo/gaz-mcp/mcp/application/diagnostics"
+	imageApp "github.com/jcastillo/gaz-mcp/mcp/application/image"
 	jenkinsApp "github.com/jcastillo/gaz-mcp/mcp/application/jenkins"
 	sqlApp "github.com/jcastillo/gaz-mcp/mcp/application/sql"
 	jenkinsDomain "github.com/jcastillo/gaz-mcp/mcp/domain/jenkins"
 	sqlDomain "github.com/jcastillo/gaz-mcp/mcp/domain/sql"
 	"github.com/jcastillo/gaz-mcp/platform/mcp/commands"
 	diagnosticsInfra "github.com/jcastillo/gaz-mcp/platform/mcp/diagnostics"
+	imageInfra "github.com/jcastillo/gaz-mcp/platform/mcp/image"
 	jenkinsInfra "github.com/jcastillo/gaz-mcp/platform/mcp/jenkins"
 	mcpserver "github.com/jcastillo/gaz-mcp/platform/mcp/server"
 	snapshotInfra "github.com/jcastillo/gaz-mcp/platform/mcp/snapshot"
@@ -31,6 +33,7 @@ type Container struct {
 	environments map[string]configDomain.EnvironmentConfig
 	jenkinsEnvs  map[string]configDomain.JenkinsEnvironmentConfig
 	snapshotCfg  configDomain.SnapshotConfig
+	imageCfg     configDomain.ImageGenerationConfig
 	version      string
 }
 
@@ -41,6 +44,7 @@ func New(
 	environments map[string]configDomain.EnvironmentConfig,
 	jenkinsEnvs map[string]configDomain.JenkinsEnvironmentConfig,
 	snapshotCfg configDomain.SnapshotConfig,
+	imageCfg configDomain.ImageGenerationConfig,
 	version string,
 ) *Container {
 	return &Container{
@@ -50,6 +54,7 @@ func New(
 		environments: environments,
 		jenkinsEnvs:  jenkinsEnvs,
 		snapshotCfg:  snapshotCfg,
+		imageCfg:     imageCfg,
 		version:      version,
 	}
 }
@@ -133,6 +138,18 @@ func (c *Container) Build() (*di.Container, error) {
 		},
 	})
 
+	// --- Image generation tools ---
+	if len(c.imageCfg.Models) > 0 {
+		defs = append(defs, di.Def{
+			Name:  "mcp.image_generation.tool",
+			Scope: di.App,
+			Build: func(ctn di.Container) (interface{}, error) {
+				repository := imageInfra.NewRepository(c.imageCfg)
+				return tools.NewImageGeneration(imageApp.NewService(c.imageCfg.Models, repository)), nil
+			},
+		})
+	}
+
 	// --- Snapshot repository (shared across all Jenkins environments) ---
 	defs = append(defs, di.Def{
 		Name:  "mcp.snapshot.repo",
@@ -207,6 +224,11 @@ func (c *Container) Build() (*di.Container, error) {
 			server := ctn.Get("mcp.server").(*mcpserver.Server)
 			sqlTool := ctn.Get("mcp.sql.tool").(tools.SQLQuery)
 			diagnosticsTool := ctn.Get("mcp.diagnostics.tool").(tools.Diagnostics)
+			var imageTool *tools.ImageGeneration
+			if len(c.imageCfg.Models) > 0 {
+				tool := ctn.Get("mcp.image_generation.tool").(tools.ImageGeneration)
+				imageTool = &tool
+			}
 
 			var jenkinsTools commands.JenkinsTools
 			if len(c.jenkinsEnvs) > 0 {
@@ -215,7 +237,7 @@ func (c *Container) Build() (*di.Container, error) {
 
 			return commands.NewRunner(
 				c.serviceName, c.serviceCfg, c.version,
-				server, sqlTool, diagnosticsTool, jenkinsTools,
+				server, sqlTool, diagnosticsTool, imageTool, jenkinsTools,
 			), nil
 		},
 	})

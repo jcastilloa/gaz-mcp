@@ -1,0 +1,4 @@
+interface:
+  display_name: "gaz-mcp Image Generation"
+  short_description: "Generate and compare OpenRouter images"
+  default_prompt: "Use $gaz-mcp-image-generation to generate and compare images with the configured OpenRouter models."

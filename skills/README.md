@@ -7,6 +7,7 @@ This directory contains the skills intended for agents that use a running `gaz-m
 | [`gaz-mcp-db`](gaz-mcp-db/SKILL.md) | Read-only MySQL and PostgreSQL inspection through `sql_query` |
 | [`gaz-mcp-jenkins`](gaz-mcp-jenkins/SKILL.md) | Jenkins inspection, administration, snapshots, and large-output handling |
 | [`gaz-mcp-diagnostics`](gaz-mcp-diagnostics/SKILL.md) | Go service instrumentation and process diagnosis with pprof, expvar, metrics, and heuristic suspicions |
+| [`gaz-mcp-image-generation`](gaz-mcp-image-generation/SKILL.md) | OpenRouter image generation and model comparison |
 
 Each skill is concise and self-contained: `SKILL.md` contains the operating knowledge required by the agent and does not depend on this README or the product manuals. `agents/openai.yaml` supplies optional UI metadata for clients that support it.
 
@@ -21,6 +22,7 @@ mkdir -p "$CONSUMER_PROJECT/.codex/skills"
 cp -R "$GAZ_MCP_DIR/skills/gaz-mcp-db" "$CONSUMER_PROJECT/.codex/skills/"
 cp -R "$GAZ_MCP_DIR/skills/gaz-mcp-jenkins" "$CONSUMER_PROJECT/.codex/skills/"
 cp -R "$GAZ_MCP_DIR/skills/gaz-mcp-diagnostics" "$CONSUMER_PROJECT/.codex/skills/"
+cp -R "$GAZ_MCP_DIR/skills/gaz-mcp-image-generation" "$CONSUMER_PROJECT/.codex/skills/"
 ```
 
 Use the equivalent skill root for another client:

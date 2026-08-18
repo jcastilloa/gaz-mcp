@@ -1,6 +1,6 @@
 service:
   transport: stdio
-  version: 0.3.0
+  version: 0.4.0
 
 environments:
   development:
@@ -29,6 +29,16 @@ snapshot:
   db_path: ~/.config/gaz-mcp/jenkins_history.db
   max_versions: 50
   auto_prune: true
+
+# Image generation through OpenRouter. The models list is a closed allowlist;
+# clients can choose only one of these values in image_generate.
+image_generation:
+  api_key: "${OPENROUTER_API_KEY}"
+  base_url: https://openrouter.ai/api/v1
+  timeout: 2m
+  models:
+    - openai/gpt-image-1
+    - google/gemini-2.5-flash-image
 
 openai:
   provider_name: openai

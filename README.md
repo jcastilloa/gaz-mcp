@@ -1,8 +1,8 @@
-![gaz-mcp — MySQL, PostgreSQL, Jenkins, and Go diagnostics exposed as an MCP server](assets/header.png)
+![gaz-mcp — MySQL, PostgreSQL, Jenkins, image generation, and Go diagnostics exposed as an MCP server](assets/header.png)
 
 # gaz-mcp
 
-`gaz-mcp` is an MCP server for read-only MySQL/PostgreSQL access, Jenkins administration with configuration history, and diagnosis of running Go processes through `pprof` and `expvar`. It also ships the independent [`diagnostics`](diagnostics/) Go module for adding those endpoints to target services.
+`gaz-mcp` is an MCP server for read-only MySQL/PostgreSQL access, Jenkins administration with configuration history, OpenRouter image generation, and diagnosis of running Go processes through `pprof` and `expvar`. It also ships the independent [`diagnostics`](diagnostics/) Go module for adding those endpoints to target services.
 
 It uses stdio transport: one binary, no daemon, and no listener opened by the MCP itself. SQL and Jenkins targets are configured once; a Go diagnostic target is supplied directly with each tool call.
 
@@ -12,6 +12,7 @@ It uses stdio transport: one binary, no daemon, and no listener opened by the MC
 |---|---|---|---|
 | SQL | Inspect MySQL and PostgreSQL data without writes | `environments` | [SQL: MySQL and PostgreSQL](docs/sql.md) |
 | Jenkins | Inspect and administer CI/CD, including configuration history | `jenkins`, `snapshot` | [Jenkins](docs/jenkins.md) |
+| Image generation | Generate and compare images through a closed OpenRouter model allowlist | `image_generation` | [Image generation](docs/image-generation.md) |
 | Go diagnostics | Capture profiles and inspect goroutines, runtime/process/host/cgroup metrics, and optional SQL pools | Per-call `target` URL | [Go process diagnostics](docs/go-process-diagnostics.md) |
 
 ### Shared properties
@@ -23,6 +24,7 @@ It uses stdio transport: one binary, no daemon, and no listener opened by the MC
 - **Jenkins toolset** — 33 tools for jobs, builds, nodes, views, queue, plugins, credentials, script console, and snapshots.
 - **Configuration history** — Jenkins snapshots are held in SQLite for the operations that support capture and rollback.
 - **SHA-256 deduplication** — identical consecutive configuration snapshots are not stored twice.
+- **Controlled image generation** — choose a configured OpenRouter image model per request, with prompt, seed references, dimensions, quality, format, seed, and provider routing controls.
 - **Go process diagnosis** — pprof profiles, grouped goroutine stacks, raw runtime/process/host/cgroup metrics, and a separate list of evidence-backed heuristic suspicions.
 - **Structured JSON output** — designed for programmatic consumption.
 - **YAML configuration** — Viper-based configuration, with deployment-time secret rendering.
@@ -90,7 +92,7 @@ Create `config.yaml` in the working directory or at `~/.config/gaz-mcp/config.ya
 ```yaml
 service:
   transport: stdio
-  version: 0.3.0
+  version: 0.4.0
 
 # SQL environments (MySQL + PostgreSQL)
 environments:
@@ -129,13 +131,23 @@ snapshot:
   db_path: ~/.config/gaz-mcp/jenkins_history.db
   max_versions: 50 # positive retention limit per object
   auto_prune: true
+
+# OpenRouter image generation. models is a closed allowlist: image_generate
+# rejects every model not declared here.
+image_generation:
+  api_key: "${OPENROUTER_API_KEY}"
+  base_url: https://openrouter.ai/api/v1
+  timeout: 2m
+  models:
+    - openai/gpt-image-1
+    - google/gemini-2.5-flash-image
 ```
 
-`engine` defaults to `mysql` when it is omitted. The SQL `database` is selected by the tool call, not here. The Go diagnostic `target` is likewise deliberately not configured here: the caller supplies the authorised process URL for each request.
+`engine` defaults to `mysql` when it is omitted. The SQL `database` is selected by the tool call, not here. For images, `image_model_list` returns the configured allowlist and `image_generate` selects one of its entries per call. The Go diagnostic `target` is likewise deliberately not configured here: the caller supplies the authorised process URL for each request.
 
-> **Configuration note:** the `${...}` values in the sample are deployment templates. The current reader loads YAML strings literally; render those placeholders from a secret manager or other deployment tooling before starting `gaz-mcp`. `max_versions` is currently normalised to the default of 50 when configured as zero or another non-positive value, so use a positive value in YAML.
+> **Configuration note:** `image_generation.api_key` expands `${NAME}` from the process environment. Keep all other secret placeholders under deployment-time configuration control. `max_versions` is currently normalised to the default of 50 when configured as zero or another non-positive value, so use a positive value in YAML.
 
-> **Security:** `api_key` accepts a Jenkins API token (recommended, created in *User → Configure → API Token*) or a password. Keep the resolved secret out of version control and use restricted deployment-time configuration. Jenkins API keys are masked in JSON output and logs.
+> **Security:** use `${OPENROUTER_API_KEY}` (or another deployment-time secret mechanism) for `image_generation.api_key`; it is masked in JSON output. The image tools are registered only when `image_generation.models` is non-empty, and an API key is then required. Jenkins `api_key` accepts a Jenkins API token (recommended, created in *User → Configure → API Token*) or a password. Keep resolved secrets out of version control and use restricted deployment-time configuration.
 
 See [`config.sample.yaml`](config.sample.yaml) for the complete sample, including the OpenAI provider settings used by the application.
 
@@ -145,7 +157,7 @@ See [`config.sample.yaml`](config.sample.yaml) for the complete sample, includin
 
 ```bash
 cp config.sample.yaml config.yaml
-# Edit the environments, jenkins, and snapshot sections, then render secret placeholders.
+# Edit the environments, jenkins, snapshot, and image_generation sections, then render secret placeholders.
 ```
 
 ### 2. Run
@@ -207,7 +219,7 @@ The root document contains installation, configuration, client setup, architectu
 | [Go process diagnostics](docs/go-process-diagnostics.md) | Service-side `pprof`/`expvar` snippet, optional `database/sql` metrics, all nine tools, findings, and profiling workflows |
 
 The service-side module is released independently using module-compatible tags
-such as `diagnostics/v0.1.0`; MCP server release tags (`v0.3.x`) are not module
+such as `diagnostics/v0.1.0`; MCP server release tags (`v0.4.x`) are not module
 versions for `github.com/jcastilloa/gaz-mcp/diagnostics`.
 
 To move the service endpoints from `/debug/...` to a custom prefix, use
@@ -224,10 +236,12 @@ gaz-mcp/
 ├── mcp/
 │   ├── application/
 │   │   ├── diagnostics/     # Go process diagnosis use cases
+│   │   ├── image/           # Image-generation use cases
 │   │   ├── jenkins/         # Jenkins use cases + NoopSnapshotRepository
 │   │   └── sql/             # SQL use case (read-only enforcement)
 │   └── domain/
 │       ├── diagnostics/     # Diagnostic target and profile-store ports
+│       ├── image/           # Image-generation repository port
 │       ├── jenkins/         # Repository + SnapshotRepository ports
 │       └── sql/             # Repository port
 ├── platform/
@@ -236,6 +250,7 @@ gaz-mcp/
 │   └── mcp/
 │       ├── commands/        # Cobra runner + tool wiring
 │       ├── diagnostics/     # HTTP pprof/expvar adapter + profile store
+│       ├── image/           # OpenRouter image API adapter
 │       ├── jenkins/         # gojenkins infrastructure adapter
 │       ├── server/          # MCP server wrapper
 │       ├── snapshot/        # SQLite snapshot repository
