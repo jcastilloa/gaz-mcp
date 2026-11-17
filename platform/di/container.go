@@ -94,7 +94,7 @@ func (c *Container) Build() (*di.Container, error) {
 			Scope: di.App,
 			Build: func(cfg configDomain.EnvironmentConfig) func(ctn di.Container) (interface{}, error) {
 				return func(ctn di.Container) (interface{}, error) {
-					if cfg.Engine == "postgres" {
+					if cfg.IsPostgres() {
 						return sqlInfra.NewPostgresRepository(cfg)
 					}
 					return sqlInfra.NewMySQLRepository(cfg)

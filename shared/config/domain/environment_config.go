@@ -2,6 +2,10 @@ package domain
 
 import (
 	"fmt"
+	"net"
+	"net/url"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -13,10 +17,15 @@ type EnvironmentConfig struct {
 	Password string
 }
 
+func (c EnvironmentConfig) IsPostgres() bool {
+	engine := strings.ToLower(strings.TrimSpace(c.Engine))
+	return engine == "postgres" || engine == "postgresql"
+}
+
 func (c EnvironmentConfig) DSN() string {
 	port := c.Port
 	if port <= 0 {
-		if c.Engine == "postgres" {
+		if c.IsPostgres() {
 			port = 5432
 		} else {
 			port = 3306
@@ -26,8 +35,17 @@ func (c EnvironmentConfig) DSN() string {
 	if host == "" {
 		host = "127.0.0.1"
 	}
-	if c.Engine == "postgres" {
-		return fmt.Sprintf("postgres://%s:%s@%s:%d/?sslmode=disable", c.User, c.Password, host, port)
+	if c.IsPostgres() {
+		connectionURL := url.URL{
+			Scheme: "postgres",
+			User:   url.UserPassword(c.User, "***"),
+			Host:   net.JoinHostPort(host, strconv.Itoa(port)),
+			Path:   "/",
+		}
+		query := connectionURL.Query()
+		query.Set("sslmode", "disable")
+		connectionURL.RawQuery = query.Encode()
+		return connectionURL.String()
 	}
 	return fmt.Sprintf("%s:%s@tcp(%s:%d)/?parseTime=true", c.User, c.Password, host, port)
 }
@@ -41,7 +59,16 @@ func (c EnvironmentConfig) PostgresDSN(database string) string {
 	if host == "" {
 		host = "127.0.0.1"
 	}
-	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable", c.User, c.Password, host, port, database)
+	connectionURL := url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(c.User, c.Password),
+		Host:   net.JoinHostPort(host, strconv.Itoa(port)),
+		Path:   "/" + database,
+	}
+	query := connectionURL.Query()
+	query.Set("sslmode", "disable")
+	connectionURL.RawQuery = query.Encode()
+	return connectionURL.String()
 }
 
 // JenkinsEnvironmentConfig holds connection details for a Jenkins instance.
