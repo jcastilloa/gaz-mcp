@@ -63,7 +63,11 @@ func (g ImageGeneration) GenerateDefinition() mcp.Tool {
 		mcp.WithString("background", mcp.Enum("auto", "transparent", "opaque"), mcp.Description("Requested background; transparent output requires a compatible format and model.")),
 		mcp.WithNumber("output_compression", mcp.Min(0), mcp.Max(100), mcp.MultipleOf(1), mcp.Description("Compression from 0 to 100; applies to JPEG or WebP when supported.")),
 		mcp.WithNumber("seed", mcp.MultipleOf(1), mcp.Description("Optional provider seed for reproducible output when supported.")),
-		mcp.WithObject("provider", mcp.Description("Optional OpenRouter routing options."), mcp.Properties(providerSchema())),
+		mcp.WithObject("provider",
+			mcp.Description("Optional OpenRouter routing options."),
+			mcp.Properties(providerPropertiesSchema()),
+			mcp.AdditionalProperties(false),
+		),
 		imageGenerationTool(),
 	)
 }
@@ -92,18 +96,14 @@ func imageReferenceSchema() map[string]any {
 	}
 }
 
-func providerSchema() map[string]any {
+func providerPropertiesSchema() map[string]any {
 	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"only":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"order":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"ignore":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"sort":            map[string]any{"type": "string", "enum": []string{"price", "throughput", "latency"}},
-			"allow_fallbacks": map[string]any{"type": "boolean"},
-			"options":         map[string]any{"type": "object", "description": "Provider-specific options allowed by OpenRouter for the selected model endpoint."},
-		},
-		"additionalProperties": false,
+		"only":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"order":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"ignore":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"sort":            map[string]any{"type": "string", "enum": []string{"price", "throughput", "latency"}},
+		"allow_fallbacks": map[string]any{"type": "boolean"},
+		"options":         map[string]any{"type": "object", "description": "Provider-specific options allowed by OpenRouter for the selected model endpoint."},
 	}
 }
 

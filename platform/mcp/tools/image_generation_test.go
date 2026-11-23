@@ -24,6 +24,38 @@ func TestImageModelListReturnsOnlyTheConfiguredAllowlist(t *testing.T) {
 	}
 }
 
+func TestImageGenerateDefinitionHasValidProviderProperties(t *testing.T) {
+	tool := NewImageGeneration(imageApp.NewService([]string{"openai/gpt-image-1"}, &imageRepository{}))
+	definition := tool.GenerateDefinition()
+
+	provider, ok := definition.InputSchema.Properties["provider"].(map[string]any)
+	if !ok {
+		t.Fatalf("provider schema = %#v, want object schema", definition.InputSchema.Properties["provider"])
+	}
+	properties, ok := provider["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("provider properties = %#v, want property map", provider["properties"])
+	}
+
+	for _, name := range []string{"only", "order", "ignore", "sort", "allow_fallbacks", "options"} {
+		if _, ok := properties[name]; !ok {
+			t.Errorf("provider properties missing %q: %#v", name, properties)
+		}
+	}
+	for name, schema := range properties {
+		switch schema.(type) {
+		case map[string]any, bool:
+		default:
+			t.Errorf("provider property %q has invalid schema type %T", name, schema)
+		}
+	}
+
+	additionalProperties, ok := provider["additionalProperties"].(bool)
+	if !ok || additionalProperties {
+		t.Errorf("provider additionalProperties = %#v, want false", provider["additionalProperties"])
+	}
+}
+
 func TestImageGenerateReturnsMCPImageContent(t *testing.T) {
 	repository := &imageRepository{response: domain.GenerateResponse{
 		Created: 123,
